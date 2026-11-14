@@ -20,6 +20,7 @@ from protocol import MAX_BODY, MAX_RESULT, validate_request
 
 SESSION_AGE = 7 * 86400
 RESULT_AGE = 15 * 60
+VERSION = (Path(__file__).resolve().parents[1] / 'VERSION').read_text().strip()
 
 
 def digest(value):
@@ -176,7 +177,7 @@ class RelayServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AIRemote/0.4"
+    server_version = "AIRemote/" + VERSION
 
     def log_message(self, *_):
         pass
@@ -262,7 +263,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         config, store = self.server.config, self.server.store
         if path == "/api/health" and self.command == "GET":
-            return self.respond(200, {"ok": True, "service": "AIRemote relay", "version": "0.5.0"})
+            return self.respond(200, {"ok": True, "service": "AIRemote relay", "version": VERSION})
         if path == "/api/login" and self.command == "POST":
             self.same_origin()
             value = self.json_body()

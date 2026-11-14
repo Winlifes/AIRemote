@@ -60,6 +60,9 @@ final class ReleaseClient {
             if (asset.getString("name").equals("SHA256SUMS")) checksums = asset.getString("browser_download_url");
         }
         if (apk == null) throw new IOException("此版本缺少 Android 安装包");
+        String base = "https://github.com/" + BuildConfig.RELEASE_REPO + "/releases/download/" + version + "/";
+        if (!apk.equals(base + "AIRemote-android.apk") || (checksums != null && !checksums.equals(base + "SHA256SUMS")))
+            throw new IOException("更新文件不属于当前仓库版本");
         if (digest != null && digest.matches("sha256:[a-fA-F0-9]{64}")) digest = digest.substring(7);
         else {
             digest = null;

@@ -45,21 +45,15 @@ public class MainActivity extends Activity {
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private void toast(String message) { runOnUiThread(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show()); }
     static String normalizeServer(String value) {
-        URI uri = URI.create(value.trim());
-        if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null ||
-            uri.getQuery() != null || uri.getFragment() != null ||
-            !(uri.getPath() == null || uri.getPath().isEmpty() || uri.getPath().equals("/")))
-            throw new IllegalArgumentException("请输入 HTTPS 服务器根地址，例如 https://remote.example.com");
-        return "https://" + uri.getRawAuthority().toLowerCase(java.util.Locale.ROOT);
+        return ServerAddress.normalize(value);
     }
     private boolean sameOrigin(String address) {
         try {
-            URI a = URI.create(address), b = URI.create(server);
-            return "https".equalsIgnoreCase(a.getScheme()) && a.getUserInfo() == null &&
-                b.getHost().equalsIgnoreCase(a.getHost()) && a.getPort() == b.getPort();
+            return ServerAddress.sameOrigin(address, server);
         } catch (Exception ignored) { return false; }
     }
     private void showSetup() {
+        if (web != null) { root.removeView(web); web.destroy(); web = null; }
         LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
         content.setGravity(Gravity.CENTER_VERTICAL); content.setPadding(dp(28), dp(24), dp(28), dp(24));
         TextView title = new TextView(this); title.setText("AIRemote"); title.setTextSize(32); title.setTextColor(Color.BLACK);
@@ -118,7 +112,7 @@ public class MainActivity extends Activity {
             .setPositiveButton("重试", (dialog, which) -> { if (web != null) web.reload(); })
             .setNegativeButton("更换服务器", (dialog, which) -> showSetup()).show());
     }
-    private final class NativeActions {
+    public final class NativeActions {
         @JavascriptInterface public void openSettings() { runOnUiThread(() -> showAppMenu()); }
         @JavascriptInterface public void download(String address, String filename, String mime) {
             runOnUiThread(() -> { if (web != null && sameOrigin(web.getUrl())) enqueueDownload(address, filename, mime); });

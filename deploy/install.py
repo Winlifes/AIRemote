@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--release', required=True)
     parser.add_argument('--config', required=True)
     parser.add_argument('--domain', required=True)
+    parser.add_argument('--auto-update', action='store_true', help='Enable stable GitHub release updates every six hours')
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise PermissionError('Installation requires root')
@@ -66,7 +67,12 @@ def main():
             shutil.copy2(backup, caddy)
             run('systemctl', 'reload', 'caddy')
             raise
-    print(json.dumps({'release': str(release), 'previous': previous, 'service': run('systemctl', 'is-active', 'airemote'), 'domain': args.domain, 'caddy': 'validated and reloaded'}))
+    if args.auto_update:
+        for name in ['airemote-update.service', 'airemote-update.timer']:
+            shutil.copyfile(release / 'deploy' / name, Path('/etc/systemd/system') / name)
+        run('systemctl', 'daemon-reload')
+        run('systemctl', 'enable', '--now', 'airemote-update.timer')
+    print(json.dumps({'release': str(release), 'previous': previous, 'service': run('systemctl', 'is-active', 'airemote'), 'domain': args.domain, 'autoUpdateEnabled': args.auto_update, 'caddy': 'validated and reloaded'}))
 
 
 if __name__ == '__main__':

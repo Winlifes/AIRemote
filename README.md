@@ -45,10 +45,12 @@ python3 deploy/setup_relay.py --origin https://remote.example.com --config /your
 ```sh
 python3 /opt/airemote/releases/<version>/deploy/install.py \
   --release /opt/airemote/releases/<version> \
-  --config /your/private/relay.json --domain remote.example.com
+  --config /your/private/relay.json --domain remote.example.com --auto-update
 ```
 
 安装器创建独立用户与 systemd 服务，服务仅监听 loopback。Caddy 负责 HTTPS，保留已有其他站点。
+
+`--auto-update` 启用每六小时的 GitHub 稳定版更新。可省略并手动执行 `python3 /opt/airemote/current/deploy/update_server.py --apply`。只检查使用 `--apply` 以外的默认模式。更新先校验 SHA-256，再切换独立版本目录；服务未通过版本健康检查时恢复上一个版本，配置和数据库始终保留。`systemctl disable --now airemote-update.timer` 可关闭自动更新。
 
 ## 配置 Mac
 
@@ -65,6 +67,8 @@ python3 deploy/configure_mac.py \
 默认配置位于 `~/Library/Application Support/AIRemote/.local/`。可重复 `--workspace` 授权多个目录，`--home` 指定配置位置。默认接入原生项目目录；文件下载仍限制在授权目录内，并且必须有 AI 回复中的明确关联。
 
 从 Releases 下载 Mac 应用，放入“应用程序”后打开；自定义配置位置可在应用中选择。源码启动可使用 `deploy/start_mac.py --config <mac-runtime.json>`。`--status` 只读，`--stop` 停止，`--restart` 重启；日志在配置旁的 `logs/`。关闭应用窗口后后台服务继续运行。
+
+Mac 安装包同时支持 Apple Silicon / Intel、macOS 13+，携带连接器代码，升级无需重新下载源码。默认每六小时检查 GitHub 稳定版，也可点“检查更新”；发现新版后点“更新并重启”。更新会保留配置、校验下载和代码签名，并在连接器启动失败时回退。安装包当前使用 ad-hoc 签名，尚未 Apple 公证；后续可在发布工作流中接入自己的 Developer ID。
 
 DeepSeek 使用 `deploy/install_deepseek.py` 注册本机 companion，仅将当前桌面 Host 的正常认证入口写入私有文件，不上传登录 token/cookie。
 
@@ -97,6 +101,17 @@ npm --prefix web run build
 真实写入验证脚本必须显式提供授权聊天 ID；单元测试使用隔离合成数据。不要将聊天数据库、截图、日志或测试产物加入 Git。
 
 版本号在 `VERSION`。GitHub Actions 执行回归与构建。签名私钥仅放在维护者私有目录和 Actions Secrets。
+
+推送 `v<VERSION>` 标签会执行正式发布工作流：测试通过后构建签名 APK、通用 Mac 应用和包含网页的中继包，统一生成 `SHA256SUMS`，最后发布完整的 GitHub Release。Android 签名通过仓库 Secrets `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD` 配置；前三者中的 alias 应与 keystore 一致。只在受信任的发布标签中使用这些 Secrets，fork 需配置自己的签名。
+
+```sh
+python3 macos/build_app.py --zip dist/AIRemote-macos.zip
+python3 tools/package_server.py
+git tag v0.6.0
+git push origin v0.6.0
+```
+
+下载文件和 `SHA256SUMS` 后，Linux 可用 `sha256sum -c SHA256SUMS`，Mac 可用 `shasum -a 256 -c SHA256SUMS`。Mac / 服务端的信任基础是维护者的 GitHub Releases 和 HTTPS；Android 还会要求更新包与原安装包签名一致。自动检查默认开启，Android 安装仍需用户在系统界面确认。
 
 ## 范围与限制
 

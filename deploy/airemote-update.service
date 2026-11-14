@@ -1,0 +1,10 @@
+[Unit]
+Description=Update AIRemote from stable GitHub Releases
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/airemote/current/deploy/update_server.py --apply
+UMask=0077
+TimeoutStartSec=300

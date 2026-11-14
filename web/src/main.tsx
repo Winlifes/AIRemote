@@ -438,6 +438,7 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
     try {
       const response = await bridgeResponse(`${threadPath(artifact.threadId)}/artifacts/${artifact.id}/download`);
       if (window.AIRemoteAndroid && new URL(response.url).origin === location.origin) {
+        void response.body?.cancel();
         window.AIRemoteAndroid.download(response.url, artifact.name, response.headers.get('Content-Type') || 'application/octet-stream');
         setToast('文件已交给系统下载'); return;
       }

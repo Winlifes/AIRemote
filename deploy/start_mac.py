@@ -55,7 +55,25 @@ def save_processes(path, processes):
     os.replace(temporary, path)
 
 
-def start_services(config_path, restart=False, stop=False, startup_timeout=20):
+def scripts_at(root):
+    root = Path(root).resolve(strict=True)
+    return {'connector': root / 'poc/control_server.py', 'agent': root / 'relay/agent.py'}
+
+
+def recorded_scripts(config_path, cfg, fallback):
+    path = Path(config_path).parent / 'mac-service-scripts.json'
+    if not path.exists(): return fallback
+    if path.stat().st_uid != os.getuid() or path.stat().st_mode & 0o077:
+        raise PermissionError('Service script record must be private and belong to this user')
+    record = json.loads(path.read_text())
+    if record.get('config') != str(Path(config_path).resolve()): raise ValueError('Service record belongs to a different configuration')
+    scripts = {key: Path(record['scripts'][key]) for key in ['connector', 'agent']}
+    if not str(scripts['connector']).endswith('/poc/control_server.py') or not str(scripts['agent']).endswith('/relay/agent.py'):
+        raise ValueError('Invalid AIRemote service script record')
+    return scripts
+
+
+def start_services(config_path, restart=False, stop=False, startup_timeout=20, runtime_root=None):
     config_path = Path(config_path).resolve(strict=True)
     if config_path.stat().st_mode & 0o077:
         raise PermissionError('Runtime config must have mode 0600')
@@ -64,17 +82,31 @@ def start_services(config_path, restart=False, stop=False, startup_timeout=20):
     private = config_path.parent
     logs = private / 'logs'; logs.mkdir(mode=0o700, exist_ok=True)
     pid_path = private / 'mac-processes.json'
-    scripts = {'connector': project / 'poc/control_server.py', 'agent': project / 'relay/agent.py'}
+    scripts = scripts_at(runtime_root or cfg.get('runtime_root') or project)
     port = int(cfg.get('connector_port', 8765))
     token = Path(cfg['token_file']).read_text().strip()
     # Hold this lock through health checks so simultaneous double-clicks reuse
     # one instance. __exit__ releases it on every failure path as well.
     with open(private / 'mac-start.lock', 'a+') as lock:
         os.chmod(lock.name, 0o600); fcntl.flock(lock, fcntl.LOCK_EX)
-        return launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, stop, startup_timeout)
+        existing = recorded_scripts(config_path, cfg, scripts_at(cfg.get('runtime_root') or project))
+        processes = json.loads(pid_path.read_text()) if pid_path.exists() else {}
+        if existing != scripts and any(alive(processes.get(name), existing[name]) for name in existing):
+            if restart or stop:
+                stop_processes(processes, existing, ['agent', 'connector']); save_processes(pid_path, processes)
+            else:
+                # A source checkout can inspect/reuse a newer bundled runtime;
+                # it must not accidentally replace it with an older checkout.
+                scripts = existing
+        result = launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, stop, startup_timeout)
+        record = private / 'mac-service-scripts.json'
+        if stop: record.unlink(missing_ok=True)
+        else:
+            save_processes(record, {'config': str(config_path), 'scripts': {key: str(value) for key, value in scripts.items()}})
+        return result
 
 
-def service_status(config_path):
+def service_status(config_path, runtime_root=None):
     config_path = Path(config_path).resolve(strict=True)
     if config_path.stat().st_mode & 0o077:
         raise PermissionError('Runtime config must have mode 0600')
@@ -82,7 +114,7 @@ def service_status(config_path):
     project = Path(cfg['project']).resolve(strict=True)
     pid_path = config_path.parent / 'mac-processes.json'
     recorded = json.loads(pid_path.read_text()) if pid_path.exists() else {}
-    scripts = {'connector': project / 'poc/control_server.py', 'agent': project / 'relay/agent.py'}
+    scripts = recorded_scripts(config_path, cfg, scripts_at(runtime_root or cfg.get('runtime_root') or project))
     running = {name: pid for name, pid in recorded.items() if name in scripts and alive(pid, scripts[name])}
     token = Path(cfg['token_file']).read_text().strip()
     port = int(cfg.get('connector_port', 8765))
@@ -161,8 +193,9 @@ def main():
     parser.add_argument('--stop', action='store_true')
     parser.add_argument('--restart', action='store_true')
     parser.add_argument('--status', action='store_true', help='Read status without starting or stopping anything')
+    parser.add_argument('--runtime-root', help='Code bundled with the application; configuration stays outside it')
     args = parser.parse_args()
-    result = service_status(args.config) if args.status else start_services(args.config, restart=args.restart, stop=args.stop)
+    result = service_status(args.config, args.runtime_root) if args.status else start_services(args.config, restart=args.restart, stop=args.stop, runtime_root=args.runtime_root)
     print(json.dumps(result, ensure_ascii=False), flush=True)
 
 

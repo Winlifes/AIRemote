@@ -92,6 +92,19 @@ class StartupTests(unittest.TestCase):
         self.assertTrue(after['connectorHealthy'])
         self.assertTrue(after['agentRunning'])
 
+    def test_bundled_runtime_is_reused_and_stopped_from_source_launcher(self):
+        bundle = self.root / 'app-runtime'
+        for folder, script in [('poc', CONNECTOR), ('relay', AGENT)]:
+            (bundle / folder).mkdir(parents=True)
+            (bundle / folder / ('control_server.py' if folder == 'poc' else 'agent.py')).write_text(script)
+        result = self.run_launcher('--runtime-root', str(bundle))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = json.loads(result.stdout.splitlines()[-1])
+        self.assertEqual(json.loads(self.run_launcher('--status').stdout)['running'], first['running'])
+        self.assertEqual(self.start()['running'], first['running'])
+        self.assertEqual(self.run_launcher('--stop').returncode, 0)
+        self.assertEqual(json.loads(self.run_launcher('--status').stdout)['running'], {})
+
     def test_live_pid_with_failed_health_is_recovered_without_restarting_agent(self):
         first = self.start()
         (self.private / 'unhealthy').touch()

@@ -18,34 +18,51 @@ struct RuntimeStatus: Decodable {
     var ready: Bool { connectorHealthy && agentRunning }
 }
 
+struct UpdateStatus: Decodable {
+    var latestVersion: String
+    var available: Bool
+    var plan: String?
+}
+
 @MainActor final class ServiceModel: ObservableObject {
     @Published var status = RuntimeStatus()
     @Published var busy = false
     @Published var message = "正在检查服务…"
     @Published var error: String?
+    @Published var update: UpdateStatus?
+    @Published var updating = false
+    @Published var updateMessage = ""
+    @Published var autoCheck = UserDefaults.standard.object(forKey: "AutoCheckUpdates") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(autoCheck, forKey: "AutoCheckUpdates") }
+    }
     private var checking = false
     private var launched = false
 
     var project: URL {
         let saved = UserDefaults.standard.string(forKey: "ProjectDirectory")
         let bundled = Bundle.main.object(forInfoDictionaryKey: "AIRemoteProjectDirectory") as? String
-        return URL(fileURLWithPath: saved ?? bundled ?? "", isDirectory: true)
+        let fallback = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/AIRemote").path
+        return URL(fileURLWithPath: saved ?? bundled ?? fallback, isDirectory: true)
     }
     var config: URL { project.appendingPathComponent(".local/mac-runtime.json") }
+    var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0" }
+    var runtime: URL { Bundle.main.resourceURL!.appendingPathComponent("runtime", isDirectory: true) }
 
     func launch() {
         guard !launched else { return }
         launched = true
         run(action: nil)
+        checkIfDue()
     }
 
     func refresh() {
+        checkIfDue()
         guard !busy && !checking else { return }
         checking = true
         let directory = project
         Task {
             defer { checking = false }
-            let result = await Self.execute(directory: directory, action: "--status")
+            let result = await Self.execute(directory: directory, runtime: runtime, action: "--status")
             if result.0 == 0, let data = result.1.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
                let value = try? JSONDecoder().decode(RuntimeStatus.self, from: data) {
                 status = value
@@ -62,7 +79,7 @@ struct RuntimeStatus: Decodable {
         message = action == "--stop" ? "正在停止服务…" : "正在启动服务…"
         let directory = project
         Task {
-            let result = await Self.execute(directory: directory, action: action)
+            let result = await Self.execute(directory: directory, runtime: runtime, action: action)
             busy = false
             if result.0 == 0 {
                 message = action == "--stop" ? "服务已停止" : "服务已启动，可以从手机继续工作"
@@ -98,13 +115,62 @@ struct RuntimeStatus: Decodable {
         NSWorkspace.shared.open(url)
     }
 
-    nonisolated private static func execute(directory: URL, action: String?) async -> (Int32, String) {
+    func checkIfDue() {
+        let checked = UserDefaults.standard.double(forKey: "LastUpdateCheck")
+        if autoCheck && Date().timeIntervalSince1970 - checked > 6 * 3600 { checkUpdates(manual: false) }
+    }
+
+    func checkUpdates(manual: Bool = true) {
+        guard !updating else { return }
+        updating = true
+        if manual { updateMessage = "正在检查 GitHub…" }
+        Task {
+            let result = await Self.updateCommand(runtime: runtime, arguments: ["--check", "--current-version", version])
+            updating = false
+            if result.0 == 0, let data = result.1.data(using: .utf8), let value = try? JSONDecoder().decode(UpdateStatus.self, from: data) {
+                update = value
+                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "LastUpdateCheck")
+                updateMessage = value.available ? "新版本 \(value.latestVersion) 可用" : "已是最新版本"
+            } else {
+                UserDefaults.standard.set(Date().timeIntervalSince1970 - 5 * 3600, forKey: "LastUpdateCheck")
+                if manual { updateMessage = "暂时无法检查更新，请稍后重试" }
+            }
+        }
+    }
+
+    func installUpdate() {
+        guard !updating && !busy else { return }
+        updating = true; updateMessage = "正在下载并校验更新…"
+        let arguments = ["--prepare", "--config", config.path, "--app", Bundle.main.bundleURL.path, "--current-version", version]
+        Task {
+            let prepared = await Self.updateCommand(runtime: runtime, arguments: arguments)
+            guard prepared.0 == 0, let data = prepared.1.data(using: .utf8),
+                  let value = try? JSONDecoder().decode(UpdateStatus.self, from: data), let plan = value.plan else {
+                updating = false; updateMessage = "更新未安装"
+                error = String(prepared.1.suffix(1200)); return
+            }
+            updateMessage = "校验通过，正在重新启动…"
+            let launched = await Self.updateCommand(runtime: runtime, arguments: ["--launch-install", plan, "--wait-pid", String(ProcessInfo.processInfo.processIdentifier)])
+            if launched.0 == 0 { NSApplication.shared.terminate(nil) }
+            else { updating = false; updateMessage = "更新未安装"; error = String(launched.1.suffix(1200)) }
+        }
+    }
+
+    nonisolated private static func updateCommand(runtime: URL, arguments: [String]) async -> (Int32, String) {
+        await process([runtime.appendingPathComponent("deploy/update_mac.py").path] + arguments)
+    }
+
+    nonisolated private static func execute(directory: URL, runtime: URL, action: String?) async -> (Int32, String) {
+        await process([runtime.appendingPathComponent("deploy/start_mac.py").path, "--config", directory.appendingPathComponent(".local/mac-runtime.json").path,
+            "--runtime-root", runtime.path] + (action.map { [$0] } ?? []))
+    }
+
+    nonisolated private static func process(_ arguments: [String]) async -> (Int32, String) {
         await Task.detached(priority: .utility) {
             let process = Process()
             let pipe = Pipe()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-            process.arguments = [directory.appendingPathComponent("deploy/start_mac.py").path, "--config", directory.appendingPathComponent(".local/mac-runtime.json").path] + (action.map { [$0] } ?? [])
-            process.currentDirectoryURL = directory
+            process.arguments = arguments
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = pipe; process.standardError = pipe
             do {
@@ -113,7 +179,7 @@ struct RuntimeStatus: Decodable {
                 process.waitUntilExit()
                 return (process.terminationStatus, String(data: output, encoding: .utf8) ?? "无法读取启动结果")
             } catch {
-                return (-1, "无法启动服务：\(error.localizedDescription)\n请检查项目位置或使用下方按钮重新选择项目文件夹。")
+                return (-1, "无法执行操作：\(error.localizedDescription)\n请检查 Python 和配置文件夹。")
             }
         }.value
     }
@@ -166,6 +232,18 @@ struct ControlView: View {
                 Button("打开手机网页") { model.openWeb() }.frame(maxWidth: .infinity)
                 Button("查看日志") { model.openLogs() }.frame(maxWidth: .infinity)
             }.buttonStyle(.bordered).controlSize(.large)
+            Divider()
+            HStack {
+                Text("版本 \(model.version)").font(.system(size: 12)).foregroundStyle(.secondary)
+                Spacer()
+                if model.updating { ProgressView().controlSize(.small) }
+                Button("检查更新") { model.checkUpdates() }.disabled(model.updating)
+                if model.update?.available == true {
+                    Button("更新并重启") { model.installUpdate() }.buttonStyle(.borderedProminent).disabled(model.updating || model.busy)
+                }
+            }
+            Toggle("自动检查 GitHub 更新", isOn: $model.autoCheck).toggleStyle(.checkbox).font(.system(size: 12))
+            if !model.updateMessage.isEmpty { Text(model.updateMessage).font(.system(size: 11)).foregroundStyle(.secondary) }
             if let error = model.error {
                 ScrollView { Text(error).font(.system(size: 11)).foregroundStyle(.red).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                     .frame(maxHeight: 110)

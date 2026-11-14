@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 from protocol import MAX_RESULT, validate_request
 
-VERSION = "0.5.0"
+VERSION = (Path(__file__).resolve().parents[1] / 'VERSION').read_text().strip()
 
 
 def acquire_agent_lock(config_path):
