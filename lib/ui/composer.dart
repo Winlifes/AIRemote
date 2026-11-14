@@ -180,7 +180,7 @@ class _ComposerDockState extends State<ComposerDock> {
                           controller: input,
                           focusNode: focus,
                           minLines: 1,
-                          maxLines: 5,
+                          maxLines: widget.keyboardVisible ? 3 : 5,
                           textCapitalization: TextCapitalization.sentences,
                           style: const TextStyle(fontSize: 16, height: 1.6),
                           decoration: InputDecoration(

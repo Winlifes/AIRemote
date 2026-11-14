@@ -53,6 +53,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
   @override
   Widget build(BuildContext context) {
     final padding = MediaQuery.viewPaddingOf(context);
+    final keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
     final selected = state.selected.isNotEmpty;
     return Scaffold(
       key: scaffold,
@@ -222,77 +223,99 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
                 state.refreshChat,
               ),
             Expanded(
-              child: selected
-                  ? _messages()
-                  : Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(32),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text(
-                              '从这里，继续创造。',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                fontSize: 29,
-                                fontWeight: FontWeight.w500,
-                                letterSpacing: -.8,
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-                            const Text(
-                              '打开侧栏，选择项目中的对话。',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(color: muted, fontSize: 14),
-                            ),
-                            const SizedBox(height: 26),
-                            FilledButton(
-                              style: FilledButton.styleFrom(
-                                backgroundColor: ink,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 25,
-                                  vertical: 14,
+              child: LayoutBuilder(
+                builder: (context, viewport) => Column(
+                  children: [
+                    Expanded(
+                      child: selected
+                          ? _messages()
+                          : Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(32),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Text(
+                                      '从这里，继续创造。',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontSize: 29,
+                                        fontWeight: FontWeight.w500,
+                                        letterSpacing: -.8,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 16),
+                                    const Text(
+                                      '打开侧栏，选择项目中的对话。',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        color: muted,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 26),
+                                    FilledButton(
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: ink,
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 25,
+                                          vertical: 14,
+                                        ),
+                                      ),
+                                      onPressed: openDrawer,
+                                      child: const Text('选择一个对话'),
+                                    ),
+                                    TextButton(
+                                      onPressed: state.canWrite
+                                          ? () => showNewChat(context, state)
+                                          : null,
+                                      child: const Text('新建对话'),
+                                    ),
+                                  ],
                                 ),
                               ),
-                              onPressed: openDrawer,
-                              child: const Text('选择一个对话'),
                             ),
-                            TextButton(
-                              onPressed: state.canWrite
-                                  ? () => showNewChat(context, state)
-                                  : null,
-                              child: const Text('新建对话'),
-                            ),
-                          ],
+                    ),
+                    if (selected && !state.followLatest)
+                      Align(
+                        alignment: Alignment.center,
+                        child: TextButton.icon(
+                          onPressed: () {
+                            state.jumpLatest();
+                            if (scroll.hasClients) {
+                              scroll.animateTo(
+                                0,
+                                duration: const Duration(milliseconds: 200),
+                                curve: Curves.easeOut,
+                              );
+                            }
+                          },
+                          icon: const Icon(Icons.arrow_downward, size: 15),
+                          label: Text(
+                            state.hasNewMessages ? '有新消息 · 回到最新' : '回到最新',
+                          ),
                         ),
                       ),
-                    ),
-            ),
-            if (selected && !state.followLatest)
-              Align(
-                alignment: Alignment.center,
-                child: TextButton.icon(
-                  onPressed: () {
-                    state.jumpLatest();
-                    if (scroll.hasClients) {
-                      scroll.animateTo(
-                        0,
-                        duration: const Duration(milliseconds: 200),
-                        curve: Curves.easeOut,
-                      );
-                    }
-                  },
-                  icon: const Icon(Icons.arrow_downward, size: 15),
-                  label: Text(state.hasNewMessages ? '有新消息 · 回到最新' : '回到最新'),
+                    if (selected)
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight: viewport.maxHeight * .8,
+                        ),
+                        child: SingleChildScrollView(
+                          reverse: true,
+                          child: ComposerDock(
+                            state: state,
+                            keyboardVisible: keyboardVisible,
+                            files: () =>
+                                showFiles(context, state, widget.native),
+                            newChat: () => showNewChat(context, state),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
-            if (selected)
-              ComposerDock(
-                state: state,
-                keyboardVisible: MediaQuery.viewInsetsOf(context).bottom > 0,
-                files: () => showFiles(context, state, widget.native),
-                newChat: () => showNewChat(context, state),
-              ),
+            ),
           ],
         ),
       ),

@@ -158,6 +158,52 @@ void main() {
     await renderEvidence(tester, 'flutter-keyboard');
     await tester.pumpWidget(const SizedBox.shrink());
   });
+  testWidgets('small keyboard viewport keeps a long draft and queue usable', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 640);
+    tester.view.devicePixelRatio = 1;
+    tester.view.viewPadding = const FakeViewPadding(top: 24, bottom: 24);
+    addTearDown(tester.view.reset);
+    final state = demoWorkspace()
+      ..queue = [
+        {
+          'id': 'q1',
+          'input': [
+            {'text': '下一步验证文件下载'},
+          ],
+        },
+        {
+          'id': 'q2',
+          'input': [
+            {'text': '整理发布说明'},
+          ],
+        },
+      ];
+    addTearDown(state.dispose);
+    state.setDraft('第一行指令\n第二行指令\n第三行指令\n第四行指令\n第五行指令');
+    await tester.pumpWidget(
+      RepaintBoundary(
+        key: const Key('qa-frame'),
+        child: AIRemoteApp(
+          workspace: state,
+          updater: null,
+          native: NativePlatform(),
+          connect: (_) async {},
+          changeServer: () {},
+        ),
+      ),
+    );
+    await tester.tap(find.byType(TextField).first);
+    await tester.pump();
+    tester.view.viewInsets = const FakeViewPadding(bottom: 280);
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    final send = tester.getRect(find.byTooltip('发送指令'));
+    expect(send.bottom, lessThanOrEqualTo(640 - 280));
+    await renderEvidence(tester, 'flutter-small-keyboard-queue');
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
   testWidgets(
     'download progress persists across settings reopen with known and unknown lengths',
     (tester) async {
