@@ -100,7 +100,7 @@ Android 0.8.0 起使用 Flutter 组件渲染全部界面：原生路由、侧栏
 
 iOS 工程与 Android 共用 `lib/` 的界面、同步、队列、目标和下载代码，CI 验证模拟器构建。真机安装、TestFlight / App Store 发布仍需维护者配置 Apple 开发者签名；iOS 更新走苹果分发渠道。
 
-本地构建：Flutter **3.50.0**（框架提交 `ab2912035e160d9cad6306df307576da6128ebdb`）、JDK 17、Android SDK 36 / NDK 28.2.13676358；iOS 需 macOS 和 Xcode。
+本地构建：Flutter **3.50.0**（框架提交 `ab2912035e160d9cad6306df307576da6128ebdb`）、JDK 21、Android SDK 36 / NDK 28.2.13676358；iOS 需 macOS 和 Xcode。
 
 ```sh
 flutter pub get --enforce-lockfile
