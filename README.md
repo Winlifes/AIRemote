@@ -86,6 +86,8 @@ DeepSeek 使用 `deploy/install_deepseek.py` 注册本机 companion，仅将当�
 
 当前目标通道匹配 Codex `26.1111.21308`，仍属实验适配；首次启用后应在专用测试聊天核对。未验证版本保留正常 Codex 启动，并禁用目标通道。改动前校验目标内容与状态的版本摘要，避免旧页面覆盖；Codex 没有原子条件写入接口，桌面与手机同时操作仍可能竞争。请求重复使用同一幂等键，结果不确定时不盲目重发；页面只有在同一进程回读后才显示已确认。
 
+0.7.1 修正桌面握手兼容：观察并转发原生 `initialize` 成功响应后启用通道，不等待 SDK 才会发送的 `initialized` 通知。0.7.0 已启动的透明代理仍在运行旧代码，更新后需要通过 Mac AIRemote 再次正常打开 Codex；单独重启 AIRemote 服务不能替换 Codex 持有的 stdio 代理。
+
 ## Android
 
 下载 Releases 中的 `AIRemote-android.apk`，支持 Android 8+。首次填写自己的 HTTPS 服务器地址，再登录该服务器账号。APK 不内置服务器密码或 agent 凭据。

@@ -188,7 +188,6 @@ class StdioGoalProxy:
         self.input_closed_at = None
         self.prefix = 'airemote:' + uuid.uuid4().hex + ':'
         self.native_initialize_id = None
-        self.native_initialized = False
         self.native_initialize_ok = False
 
     def send(self, packet):
@@ -223,20 +222,13 @@ class StdioGoalProxy:
     def native_input(self):
         try:
             for line in self.input:
-                initialized = False
                 try:
                     value = json.loads(line)
                     if isinstance(value, dict) and value.get('method') == 'initialize':
                         self.native_initialize_id = value.get('id')
-                    elif isinstance(value, dict) and value.get('method') == 'initialized':
-                        initialized = True
                 except (ValueError, TypeError):
                     pass
                 self.send(line)
-                if initialized:
-                    self.native_initialized = True
-                if self.native_initialized and self.native_initialize_ok:
-                    self.ready.set()
         except (OSError, ConnectionError):
             pass
         finally:
@@ -266,10 +258,13 @@ class StdioGoalProxy:
                         continue
                     if self.native_initialize_id is not None and request_id == self.native_initialize_id and 'result' in value:
                         self.native_initialize_ok = True
-                        if self.native_initialized:
-                            self.ready.set()
                 self.output.write(line)
                 self.output.flush()
+                # Codex Desktop starts regular RPCs after initialize succeeds;
+                # unlike the SDK, it does not send an initialized notification.
+                # Observe the native response, forward it, then allow Goal RPCs.
+                if self.native_initialize_ok:
+                    self.ready.set()
         finally:
             self.closed.set()
             with self.lock:

@@ -26,7 +26,8 @@ for line in sys.stdin:
     value=json.loads(line)
     method=value.get('method'); params=value.get('params',{})
     if method=='initialize':
-        send({'id':value['id'],'result':{'echo':params}})
+        if params.get('reject'): send({'id':value['id'],'error':{'code':-32600,'message':'fixture rejected handshake'}})
+        else: send({'id':value['id'],'result':{'echo':params}})
     elif method=='initialized': pass
     elif method=='thread/loaded/list': send({'id':value['id'],'result':{'data':['11111111-1111-4111-8111-111111111111'],'nextCursor':None}})
     elif method=='thread/goal/get': send({'id':value['id'],'result':{'goal':goal}})
@@ -71,11 +72,12 @@ class GoalProxyTests(unittest.TestCase):
     def read(self):
         return self.output.get(timeout=3)
 
-    def initialize(self):
+    def initialize(self, notification=True, request_id=93):
         params = {'clientInfo': {'name': 'native-fixture'}, 'capabilities': {'experimentalApi': True}}
-        self.send({'id': 93, 'method': 'initialize', 'params': params})
-        self.assertEqual(self.read(), {'id': 93, 'result': {'echo': params}})
-        self.send({'method': 'initialized'})
+        self.send({'id': request_id, 'method': 'initialize', 'params': params})
+        self.assertEqual(self.read(), {'id': request_id, 'result': {'echo': params}})
+        if notification:
+            self.send({'method': 'initialized'})
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             records = self.client._records()
@@ -103,6 +105,19 @@ class GoalProxyTests(unittest.TestCase):
             self.client.owner(THREAD)
         self.initialize()
         self.assertEqual(self.client.request('thread/goal/get', {'threadId': THREAD}), {'goal': None})
+
+    def test_desktop_one_phase_handshake_does_not_wait_for_sdk_notification(self):
+        self.initialize(notification=False, request_id='__codex_initialize__')
+        owner = self.client.owner(THREAD)
+        result = self.client.request('thread/goal/set', {'threadId': THREAD, 'objective': 'one phase fixture', 'status': 'paused', 'origin': 'user'}, owner)
+        self.assertEqual(result['goal']['status'], 'paused')
+        self.assertEqual(self.read()['method'], 'thread/goal/updated')
+
+    def test_failed_native_initialize_never_enables_goal_writes(self):
+        self.send({'id': '__codex_initialize__', 'method': 'initialize', 'params': {'reject': True}})
+        self.assertIn('error', self.read())
+        with self.assertRaises(GoalUnavailable):
+            self.client.owner(THREAD)
 
     def test_goals_share_original_process_and_injected_responses_do_not_leak(self):
         self.initialize()
