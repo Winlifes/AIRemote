@@ -555,8 +555,8 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
         {!followLatest && <button className="jump-latest" onClick={jumpToLatest}><ArrowDown size={14} />{hasNewMessages ? '有新消息 · 回到最新' : '回到最新消息'}</button>}
         <div className="composer-wrap">
           {receipt && <ReceiptView receipt={receipt} close={() => setReceipt(null)} />}
-          <QueueDock reorder={!!provider?.features.includes('queue-reorder')} items={queue} active={stat.tone === 'green'} enabled={!!canWrite} onSend={item => queueAction(item, 'send')} onDelete={item => queueAction(item, 'delete')} onEdit={item => { setEditing(item); setEditText(queueText(item)); }} onMove={(item, direction) => queueAction(item, direction)} onClear={() => setClearing(true)} />
           {providerId === 'codex' && <ModelStatus thread={thread} online={device.connectorOnline && !syncErrors.thread} />}
+          <QueueDock reorder={!!provider?.features.includes('queue-reorder')} items={queue} active={stat.tone === 'green'} enabled={!!canWrite} onSend={item => queueAction(item, 'send')} onDelete={item => queueAction(item, 'delete')} onEdit={item => { setEditing(item); setEditText(queueText(item)); }} onMove={(item, direction) => queueAction(item, direction)} onClear={() => setClearing(true)} />
           <Composer mobile={mobile} value={draft} onChange={value => setDrafts(d => ({ ...d, [selected]: value }))} onSend={send} mode={sendMode} setMode={setSendMode} providerId={providerId} providerName={providerName} busy={!!busy} enabled={!!canWrite} hasQueue={!!queue.length} onFiles={() => setFilesOpen(true)} onNewChat={showNewChat} />
           <div className="composer-caption">{busy || (sendMode === 'queue' ? `原生队列由 ${providerName} 自动执行，空闲时可能立即开始` : stat.tone === 'green' ? '运行中发送会追加到当前对话 · ⌘ / Ctrl + Enter 发送' : '在同一对话继续下一轮 · ⌘ / Ctrl + Enter 发送')}</div>
         </div>

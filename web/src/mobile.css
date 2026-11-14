@@ -9,12 +9,12 @@
 .composer-actions>button>svg:last-child:not(:first-child){margin-left:auto}
 .composer-menu-separator{height:1px;background:#efeff1;margin:4px 8px}
 .composer textarea:focus{border:0!important;box-shadow:none!important}
-.model-status{max-width:990px;margin:0 auto 7px;display:flex;align-items:center;justify-content:space-between;gap:10px;color:#77777e;font-size:11px;line-height:20px;min-height:20px;padding:0 5px}
+.model-status{max-width:990px;margin:0 auto 7px;display:flex;align-items:center;justify-content:space-between;gap:10px;color:#68686f;font-size:12px;line-height:20px;min-height:20px;padding:0 5px}
 .model-name{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .model-effort{margin-left:7px;color:#55555e}
 .model-modes{display:flex;align-items:center;gap:10px;flex-shrink:0}
 .model-modes>span{display:inline-flex;gap:4px;align-items:center}
-.model-modes .full-access{color:#bd793c}
+.model-modes .full-access{color:#986226}
 @media(max-width:700px){
  .app{height:var(--airemote-viewport-height,100dvh);min-height:0;overflow:hidden;background:#fafafa}
  .app>.workspace,.app.has-selection>.workspace{display:flex;width:100%;min-height:0;background:#fafafa}
