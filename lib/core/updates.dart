@@ -51,10 +51,26 @@ class GitHubReleases {
   }
 
   Future<HttpClientResponse> open(Uri uri) async {
+    for (var attempt = 0; ; attempt++) {
+      try {
+        return await _openOnce(uri);
+      } on SocketException {
+        if (attempt == 2) rethrow;
+      } on TimeoutException {
+        if (attempt == 2) rethrow;
+      }
+      await Future<void>.delayed(Duration(milliseconds: 500 * (1 << attempt)));
+    }
+  }
+
+  Future<HttpClientResponse> _openOnce(Uri uri) async {
     for (var n = 0; n < 6; n++) {
       trusted(uri);
       final request = await client.getUrl(uri);
       request.followRedirects = false;
+      // Hash the original APK bytes and parse uncompressed JSON metadata.
+      // Dart otherwise advertises gzip even with autoUncompress disabled.
+      request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
       request.headers.set(
         HttpHeaders.userAgentHeader,
         'AIRemote-Flutter-Updater',
@@ -297,7 +313,7 @@ class AppUpdater extends ChangeNotifier {
           ? 'available'
           : 'latest';
     } catch (e) {
-      error = '$e';
+      error = updateError(e);
       stage = 'error';
     }
     changed();
@@ -334,7 +350,7 @@ class AppUpdater extends ChangeNotifier {
       stage = 'ready';
     } catch (e) {
       stage = 'error';
-      error = '$e';
+      error = updateError(e);
     }
     changed();
   }
@@ -372,3 +388,11 @@ class AppUpdater extends ChangeNotifier {
     super.dispose();
   }
 }
+
+String updateError(Object error) => error is SocketException
+    ? '无法连接 GitHub 下载源，请检查网络后重试。'
+    : error is TimeoutException
+    ? 'GitHub 响应超时，请稍后重试。'
+    : error is HandshakeException
+    ? '下载源 HTTPS 证书验证失败，已停止更新。'
+    : '$error';

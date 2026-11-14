@@ -476,7 +476,7 @@ class Workspace extends ChangeNotifier {
     changed();
     try {
       final value = await read(
-        '/api/threads/$id/messages?limit=40&before=$cursor',
+        '/api/threads/$id/messages?limit=40&before=${Uri.encodeQueryComponent(cursor)}',
       );
       if (generation != _generation || disposed) return;
       if (objects(

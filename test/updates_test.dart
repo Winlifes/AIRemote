@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -59,13 +60,18 @@ class Response extends Stream<List<int>> implements HttpClientResponse {
 
 class Request implements HttpClientRequest {
   final Response response;
-  Request(this.response);
+  final bool gzipMetadata;
+  Request(this.response, {this.gzipMetadata = false});
   @override
   final headers = Headers();
   @override
   bool followRedirects = false;
   @override
-  Future<HttpClientResponse> close() async => response;
+  Future<HttpClientResponse> close() async =>
+      gzipMetadata &&
+          headers.value(HttpHeaders.acceptEncodingHeader) != 'identity'
+      ? Response([gzip.encode(response.chunks.expand((v) => v).toList())])
+      : response;
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
@@ -73,7 +79,8 @@ class Request implements HttpClientRequest {
 class Client implements HttpClient {
   final List<Response> replies;
   final urls = <Uri>[];
-  Client(this.replies);
+  final bool gzipMetadata;
+  Client(this.replies, {this.gzipMetadata = false});
   @override
   Duration? connectionTimeout;
   @override
@@ -81,7 +88,7 @@ class Client implements HttpClient {
   @override
   Future<HttpClientRequest> getUrl(Uri url) async {
     urls.add(url);
-    return Request(replies.removeAt(0));
+    return Request(replies.removeAt(0), gzipMetadata: gzipMetadata);
   }
 
   @override
@@ -91,6 +98,29 @@ class Client implements HttpClient {
 }
 
 void main() {
+  test(
+    'GitHub metadata stays readable when the transport advertises gzip by default',
+    () async {
+      final payload = {
+        'tag_name': 'v0.8.0',
+        'assets': [
+          {
+            'name': 'AIRemote-android.apk',
+            'browser_download_url':
+                'https://github.com/Winlifes/AIRemote/releases/download/v0.8.0/AIRemote-android.apk',
+            'digest': 'sha256:${'a' * 64}',
+            'size': 10,
+          },
+        ],
+      };
+      final source = GitHubReleases(
+        httpClient: Client([
+          Response([utf8.encode(jsonEncode(payload))]),
+        ], gzipMetadata: true),
+      );
+      expect((await source.latest()).version, 'v0.8.0');
+    },
+  );
   test('version codes preserve the existing Android upgrade ordering', () {
     expect(versionCode('v0.8.0'), 8000);
     expect(versionCode('0.8.0'), greaterThan(versionCode('0.7.1')));

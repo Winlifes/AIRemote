@@ -441,10 +441,13 @@ void showSettings(
                             onPressed: updater.check,
                             child: const Text('检查更新'),
                           ),
-                        if (updater.stage == 'available')
+                        if (updater.stage == 'available' ||
+                            updater.stage == 'error' && updater.release != null)
                           FilledButton(
                             onPressed: updater.download,
-                            child: const Text('下载更新'),
+                            child: Text(
+                              updater.stage == 'error' ? '重试下载' : '下载更新',
+                            ),
                           ),
                         if (['ready', 'installing'].contains(updater.stage))
                           FilledButton(
