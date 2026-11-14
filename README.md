@@ -90,7 +90,7 @@ DeepSeek 使用 `deploy/install_deepseek.py` 注册本机 companion，仅将当�
 
 ## Android / iOS（Flutter）
 
-Android 0.8.0 起使用 Flutter 组件渲染全部界面：原生路由、侧栏、聊天列表、输入框、队列和目标表单。客户端直接通过 HTTPS API 接入自己的中继，不加载网页 UI；React 网页仍可单独访问。
+Android 0.8.1 起使用 Flutter 组件渲染全部界面：原生路由、侧栏、聊天列表、输入框、队列和目标表单。客户端直接通过 HTTPS API 接入自己的中继，不加载网页 UI；React 网页仍可单独访问。
 
 下载 Releases 中的 `AIRemote-android.apk`，支持 Android 8+。包名和长期签名保留，原版本可覆盖升级。首次填写自己的 HTTPS 服务器地址，再登录该服务器账号；旧版本的地址和登录会话会迁移到加密存储。APK 不内置服务器密码或 agent 凭据。
 
