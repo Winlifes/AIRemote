@@ -14,6 +14,9 @@ import 'support.dart';
 Future<void> renderEvidence(WidgetTester tester, String name) async {
   final directory = Platform.environment['AIREMOTE_QA_OUTPUT'];
   if (directory == null) return;
+  await tester.runAsync(() async {
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+  });
   await tester.pump();
   await tester.runAsync(() async {
     final boundary = tester.renderObject<RenderRepaintBoundary>(

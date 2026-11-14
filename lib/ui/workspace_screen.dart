@@ -177,23 +177,23 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
                 padding: const EdgeInsets.fromLTRB(20, 0, 18, 8),
                 child: Row(
                   children: [
-                    if (state.online && runtimeType(state.chat) == 'active')
+                    if (state.isRunning)
                       const SizedBox.square(
                         dimension: 10,
                         child: CircularProgressIndicator(strokeWidth: 1.5),
                       ),
-                    if (state.online && runtimeType(state.chat) == 'active')
-                      const SizedBox(width: 6),
+                    if (state.isRunning) const SizedBox(width: 6),
                     Text(
                       state.online
-                          ? runtimeLabel(state.chat)
+                          ? state.hasLiveStatus
+                                ? runtimeLabel(state.chat)
+                                : '状态待同步'
                           : state.device['online'] == true
                           ? '连接器离线'
                           : 'Mac 离线',
                       style: TextStyle(
                         fontSize: 11,
-                        color:
-                            state.online && runtimeType(state.chat) == 'active'
+                        color: state.isRunning
                             ? const Color(0xff239d7b)
                             : muted,
                       ),
@@ -341,7 +341,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
           WidgetsBinding.instance.addPostFrameCallback((_) => state.changed());
         }
         if (event is UserScrollNotification &&
-            event.direction != ScrollDirection.idle &&
+            event.direction == ScrollDirection.reverse &&
             event.metrics.pixels > event.metrics.maxScrollExtent - 100 &&
             state.hasOlder) {
           state.loadOlder();
@@ -356,9 +356,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
         itemCount:
             messages.length +
             (state.hasOlder || state.loadingOlder ? 1 : 0) +
-            (runtimeType(state.chat) == 'active' ? 1 : 0),
+            (state.isRunning ? 1 : 0),
         itemBuilder: (context, index) {
-          if (runtimeType(state.chat) == 'active') {
+          if (state.isRunning) {
             if (index == 0) {
               return const Padding(
                 padding: EdgeInsets.symmetric(vertical: 12),

@@ -156,6 +156,19 @@ void main() {
       expect(state.goal?['status'], 'paused');
     },
   );
+  test(
+    'cached active status never appears live while offline or status reads fail',
+    () {
+      final state = demoWorkspace();
+      addTearDown(state.dispose);
+      expect(state.isRunning, true);
+      state.device = {'online': false, 'connectorOnline': false};
+      expect(state.isRunning, false);
+      state.device = {'online': true, 'connectorOnline': true};
+      state.laneErrors['thread'] = 'timeout';
+      expect(state.isRunning, false);
+    },
+  );
   test('turn metadata keeps terminal status and seconds across pagination', () {
     final merged = mergeTurns(
       [

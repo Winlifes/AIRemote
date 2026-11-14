@@ -149,6 +149,11 @@ class Workspace extends ChangeNotifier {
       descriptor['connected'] == true &&
       !busy &&
       (descriptor['features'] as List? ?? []).contains('send');
+  bool get hasLiveStatus =>
+      online &&
+      descriptor['connected'] == true &&
+      !laneErrors.containsKey('thread');
+  bool get isRunning => hasLiveStatus && runtimeType(chat) == 'active';
   String get providerName => provider == 'codex' ? 'Codex' : 'DeepSeek';
   String get draftKey => '$provider/$selected';
   String get draft => drafts[draftKey] ?? '';
@@ -558,8 +563,8 @@ class Workspace extends ChangeNotifier {
   }
 
   Future<bool> send() async {
-    final text = draft.trim();
-    if (text.isEmpty || !canWrite) return false;
+    final text = draft;
+    if (text.trim().isEmpty || !canWrite) return false;
     final key = draftKey,
         id = selected,
         generation = _generation,
@@ -570,7 +575,7 @@ class Workspace extends ChangeNotifier {
       {'text': text},
     );
     if (value == null) return false;
-    if (drafts[key]?.trim() == text) drafts[key] = '';
+    if (drafts[key] == text) drafts[key] = '';
     if (generation == _generation) {
       notice = mode == 'queue' ? '已加入原生队列' : 'Mac 已受理，正在回读对话';
       followLatest = true;

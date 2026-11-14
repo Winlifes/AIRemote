@@ -159,8 +159,8 @@ class _ComposerDockState extends State<ComposerDock> {
                   ],
                 ),
               ),
-            if (goal != null) GoalDock(state: state),
             if (state.queue.isNotEmpty) _QueueDock(state: state),
+            if (goal != null) GoalDock(state: state),
             // The overlapping outline belongs to the composer, like the source app.
             Container(
               key: const Key('message-composer'),
@@ -390,6 +390,8 @@ class GoalDock extends StatelessWidget {
                   children: [
                     Text(
                       goalLabel(goal['status']),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
