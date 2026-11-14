@@ -13,7 +13,7 @@ import time
 import uuid
 
 from start_mac import start_services
-from update_core import DEFAULT_REPO, extract_zip, fetch_asset, latest_release, release_asset, version_tuple
+from update_core import DEFAULT_REPO, extract_zip, fetch_asset, latest_release, release_asset, version_tuple, progress_event
 
 BUNDLE_ID = 'fun.winlife.airemote'
 
@@ -36,8 +36,8 @@ def verify_bundle(app, version):
     subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True, capture_output=True)
 
 
-def check(current, repo=DEFAULT_REPO):
-    release = latest_release(repo)
+def check(current, repo=DEFAULT_REPO, progress=None):
+    release = latest_release(repo, progress=progress)
     return release, {'currentVersion': current, 'latestVersion': release['tag_name'].lstrip('v'),
         'available': version_tuple(release['tag_name']) > version_tuple(current),
         'releaseUrl': release['html_url']}
@@ -53,18 +53,19 @@ def validate_target(app):
     return app
 
 
-def prepare(config, app, current, repo=DEFAULT_REPO):
+def prepare(config, app, current, repo=DEFAULT_REPO, progress=None):
     config = Path(config).resolve(strict=True)
     if config.stat().st_mode & 0o077: raise PermissionError('Runtime configuration must be private')
     app = validate_target(app)
-    release, info = check(current, repo)
+    release, info = check(current, repo, progress)
     if not info['available']: raise ValueError('No newer stable release is available')
     stage = config.parent / 'updates' / (release['tag_name'] + '-' + uuid.uuid4().hex[:12])
     stage.mkdir(parents=True, mode=0o700); stage.parent.chmod(0o700)
     asset = release_asset(release, 'AIRemote-macos.zip', repo)
-    archive = fetch_asset(asset, stage)
-    extract_zip(archive, stage / 'unpacked')
+    archive = fetch_asset(asset, stage, progress=progress)
+    extract_zip(archive, stage / 'unpacked', progress=progress)
     candidate = stage / 'unpacked/AIRemote.app'
+    progress_event(progress, 'verifying_app')
     verify_bundle(candidate, release['tag_name'])
     installer = candidate / 'Contents/Resources/runtime/deploy/update_mac.py'
     if not installer.is_file(): raise ValueError('Update does not contain a bundled installer')
@@ -72,6 +73,7 @@ def prepare(config, app, current, repo=DEFAULT_REPO):
     plan.write_text(json.dumps({'config': str(config), 'app': str(app), 'candidate': str(candidate),
         'version': release['tag_name'], 'sha256': asset['sha256'], 'installer': str(installer)}, indent=2))
     plan.chmod(0o600)
+    progress_event(progress, 'prepared')
     return {**info, 'plan': str(plan)}
 
 
@@ -131,7 +133,9 @@ def main():
     parser.add_argument('--config', type=Path); parser.add_argument('--app', type=Path, default=Path('/Applications/AIRemote.app'))
     parser.add_argument('--current-version'); parser.add_argument('--repo', default=DEFAULT_REPO)
     parser.add_argument('--wait-pid', type=int, default=0)
+    parser.add_argument('--progress', action='store_true', help='Emit live NDJSON progress before the final JSON result')
     args = parser.parse_args()
+    progress = (lambda event: print(json.dumps(event, ensure_ascii=False), flush=True)) if args.progress else None
     if args.perform:
         plan = load_plan(args.perform); wait_for_exit(args.wait_pid)
         lock_path = Path(plan['config']).parent / 'updates/install.lock'
@@ -150,10 +154,10 @@ def main():
         result = {'installerStarted': True, 'pid': process.pid, 'log': str(log)}
     else:
         current = args.current_version or app_info(args.app)['CFBundleShortVersionString']
-        if args.check: _, result = check(current, args.repo)
+        if args.check: _, result = check(current, args.repo, progress)
         else:
             if not args.config: parser.error('--prepare requires --config')
-            result = prepare(args.config, args.app, current, args.repo)
+            result = prepare(args.config, args.app, current, args.repo, progress)
     print(json.dumps(result, ensure_ascii=False), flush=True)
 
 

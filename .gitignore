@@ -22,4 +22,17 @@ build/
 !*.env.example
 *.log
 .idea/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+coverage/
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+ios/Flutter/ephemeral/
+ios/Runner/GeneratedPluginRegistrant.*
+**/xcuserdata/
+macos/Flutter/
+android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
 

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronRight, LoaderCircle, Pause, Pencil, Play, Target, X } from 'lucide-react';
+import { LoaderCircle, Pause, Pencil, Play, Target, Trash2, X } from 'lucide-react';
 import { GoalState, Receipt, goalPresentation } from './api';
 import './goals.css';
 
@@ -25,9 +25,13 @@ export function GoalControl({ state, open, close, show, online, busy, error, cha
     setEditing(false); setClosing(false); return true;
   }
   return <>
-    {goal && labels && <button className={`goal-summary ${labels.active ? 'active' : ''}`} onClick={show} aria-label={`查看对话目标，${labels.label}`}>
-      <Target size={17} /><span className="goal-summary-text">{goal.objective}</span><span className="goal-status">{labels.active && <LoaderCircle className="spin" size={12} />}{labels.label}</span><ChevronRight size={14} />
-    </button>}
+    {goal && labels && <div className={`goal-dock ${labels.active ? 'active' : ''}`}>
+      <Target size={17} />
+      <button className="goal-dock-main" onClick={show} aria-label={`查看对话目标，${labels.label}`}><strong>{labels.active ? '进行中的目标' : `${labels.label}的目标`}</strong><span>{goal.objective}</span></button>
+      <time className="goal-dock-time" title={`已处理 ${labels.time}`}>{elapsed(goal.timeUsedSeconds)}</time>
+      <button className="icon-button" aria-label="关闭目标" title="关闭目标" disabled={!enabled} onClick={() => { setClosing(true); show(); }}><Trash2 size={17} /></button>
+      {goal.status !== 'complete' && <button className="icon-button" aria-label={labels.active ? '暂停目标' : '继续目标'} title={labels.active ? '暂停目标' : '继续目标'} disabled={!enabled} onClick={() => act('PATCH', { status: labels.active ? 'paused' : 'active' })}>{labels.active ? <Pause size={17} /> : <Play size={17} />}</button>}
+    </div>}
     {open && <Modal title={goal ? '对话目标' : '设置对话目标'} close={dismiss} className="goal-modal">
       {error && <p className="error-text" role="alert">{error}</p>}
       {feedback && <p className="goal-feedback" role="status">{feedback}</p>}
@@ -50,6 +54,11 @@ export function GoalControl({ state, open, close, show, online, busy, error, cha
       </>}
     </Modal>}
   </>;
+}
+
+function elapsed(value: number) {
+  const s = Math.max(0, Math.floor(value || 0)), d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return `${d ? `${d}d ` : ''}${d || h ? `${h}h ` : ''}${d || h || m ? `${m}m ` : ''}${s % 60}s`;
 }
 
 function GoalEditor({ state, enabled, busy, cancel, submit }: { state: GoalState; enabled: boolean; busy: boolean; cancel: () => void; submit: (data: object) => Promise<boolean> }) {

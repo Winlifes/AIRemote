@@ -7,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch, Mock
+import start_mac
 
 
 LAUNCHER = Path(__file__).with_name('start_mac.py')
@@ -91,6 +93,16 @@ class StartupTests(unittest.TestCase):
         self.assertEqual(after['running'],started['running'])
         self.assertTrue(after['connectorHealthy'])
         self.assertTrue(after['agentRunning'])
+
+    def test_new_child_is_not_mistaken_for_an_exited_process_during_exec(self):
+        cfg = json.loads(self.config.read_text())
+        logs = self.private / 'logs'; logs.mkdir()
+        scripts = start_mac.scripts_at(self.root)
+        child = Mock(pid=99999999); child.poll.return_value = None
+        with patch.object(start_mac, 'alive', return_value=False), patch.object(start_mac, 'connector_healthy', side_effect=[False, True, True]), patch.object(start_mac.subprocess, 'Popen', return_value=child), patch.object(start_mac.time, 'sleep'), patch.object(start_mac.time, 'monotonic', side_effect=[0, .1, 0, .1, 2]):
+            result = start_mac.launch_locked(cfg, self.root, scripts, logs, self.private/'mock-processes.json', self.port, 'fixture', False, False, 20)
+        self.assertEqual(result['started'], ['connector', 'agent'])
+        self.assertTrue(result['terminalMayClose'])
 
     def test_bundled_runtime_is_reused_and_stopped_from_source_launcher(self):
         bundle = self.root / 'app-runtime'

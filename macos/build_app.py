@@ -53,7 +53,7 @@ def main():
     for arch in ['arm64', 'x86_64']:
         binary = staging.parent / ('AIRemote-' + arch)
         run('xcrun', 'swiftc', '-swift-version', '5', '-parse-as-library', '-O', '-g', '-debug-prefix-map', str(PROJECT) + '=/AIRemote',
-            '-target', arch + '-apple-macosx13.0', str(PROJECT / 'macos/AIRemoteApp.swift'), '-o', str(binary))
+            '-target', arch + '-apple-macosx13.0', str(PROJECT / 'macos/AIRemoteApp.swift'), str(PROJECT / 'macos/UpdaterProcess.swift'), '-o', str(binary))
         binaries.append(str(binary))
     run('xcrun', 'lipo', '-create', *binaries, '-output', str(macos / 'AIRemote'))
     run('xcrun', 'strip', '-S', str(macos / 'AIRemote'))

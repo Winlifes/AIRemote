@@ -153,6 +153,12 @@ def launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, s
         connector.append('--discover-desktop-projects')
     commands = {'connector': connector, 'agent': [sys.executable, str(scripts['agent']), '--config', cfg['agent_config']]}
     started = []
+    launched = {}
+    def running(name):
+        # Our child handle is authoritative during exec. On a busy Mac, `ps`
+        # can briefly show the Python executable without its script arguments.
+        child = launched.get(name)
+        return child.poll() is None if child is not None else alive(processes.get(name), scripts[name])
     for name, command in commands.items():
         if not alive(processes.get(name), scripts[name]):
             if name == 'connector' and connector_healthy(port, token):
@@ -162,12 +168,13 @@ def launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, s
                 child = subprocess.Popen(command, cwd=project, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                                          start_new_session=True, close_fds=True, env={**os.environ, 'PYTHONUNBUFFERED': '1'})
             processes[name] = child.pid
+            launched[name] = child
             started.append(name)
             save_processes(pid_path, processes)
         if name == 'connector':
             deadline = time.monotonic() + startup_timeout
             while time.monotonic() < deadline:
-                if not alive(processes.get(name), scripts[name]):
+                if not running(name):
                     raise RuntimeError('Codex 连接器启动后退出，请查看 ' + str(logs / 'connector.log'))
                 if connector_healthy(port, token):
                     break
@@ -178,7 +185,7 @@ def launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, s
             # A duplicate-agent lock or missing config exits immediately.
             deadline = time.monotonic() + 1
             while time.monotonic() < deadline:
-                if not alive(processes.get(name), scripts[name]):
+                if not running(name):
                     raise RuntimeError('公网连接进程启动后退出，请查看 ' + str(logs / 'agent.log'))
                 time.sleep(.1)
     if not connector_healthy(port, token):

@@ -523,7 +523,6 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
           {window.AIRemoteAndroid && <button className="icon-button" aria-label="Android 应用设置与更新" onClick={() => window.AIRemoteAndroid?.openSettings()}><MoreHorizontal size={19} /></button>}
         </header>
         <div className="conversation-subheader"><span className={`status-label ${device.connectorOnline && !syncErrors.thread ? stat.tone : 'muted'}`}><i className="dot" />{syncErrors.thread ? '状态待同步' : device.connectorOnline ? stat.label : device.online ? '连接器离线' : 'Mac 离线'}</span><span className="status-hint">{device.connectorOnline ? stat.hint : '恢复连接后继续同步'}</span><span className="updated">{syncErrors.messages ? '消息同步中断' : lastUpdated ? `${shortTime(lastUpdated)} 同步` : '等待同步'}</span></div>
-        {providerId === 'codex' && <GoalControl key={selected} state={thread?.goalState} open={goalOpen} close={() => setGoalOpen(false)} show={() => { setError(''); setGoalOpen(true); }} online={device.connectorOnline && !syncErrors.thread && !loading} busy={!!busy} error={error} change={changeGoal} Modal={Modal} />}
         {!device.connectorOnline && <div className="offline-banner" role="status"><WifiOff size={17} /><span>{device.online ? 'Mac 在线，但本地连接器暂不可用。' : 'Mac 暂时离线，正在等待重新连接。'}<small>当前显示的是本次打开时已读取的内容。</small></span></div>}
         {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="关闭错误提示" onClick={() => setError('')}><X size={16} /></button></div>}
         {!error && (syncErrors.messages || syncErrors.thread || syncErrors.queue) && <div className="error-banner" role="status"><span>{syncErrors.messages ? `消息暂未更新：${syncErrors.messages}` : syncErrors.thread ? `运行状态暂未更新：${syncErrors.thread}` : `队列暂未更新：${syncErrors.queue}`}</span></div>}
@@ -567,8 +566,11 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
         <div className="composer-wrap">
           {receipt && <ReceiptView receipt={receipt} close={() => setReceipt(null)} />}
           {providerId === 'codex' && <ModelStatus thread={thread} online={device.connectorOnline && !syncErrors.thread} />}
+          <div className="composer-stack">
+        {providerId === 'codex' && <GoalControl key={selected} state={thread?.goalState} open={goalOpen} close={() => setGoalOpen(false)} show={() => { setError(''); setGoalOpen(true); }} online={device.connectorOnline && !syncErrors.thread && !loading} busy={!!busy} error={error} change={changeGoal} Modal={Modal} />}
           <QueueDock reorder={!!provider?.features.includes('queue-reorder')} items={queue} active={stat.tone === 'green'} enabled={!!canWrite} onSend={item => queueAction(item, 'send')} onDelete={item => queueAction(item, 'delete')} onEdit={item => { setEditing(item); setEditText(queueText(item)); }} onMove={(item, direction) => queueAction(item, direction)} onClear={() => setClearing(true)} />
-          <Composer mobile={mobile} value={draft} onChange={value => setDrafts(d => ({ ...d, [selected]: value }))} onSend={send} mode={sendMode} setMode={setSendMode} providerId={providerId} providerName={providerName} busy={!!busy} enabled={!!canWrite} hasQueue={!!queue.length} onFiles={() => setFilesOpen(true)} onNewChat={showNewChat} />
+          <Composer mobile={mobile} value={draft} onChange={value => setDrafts(d => ({ ...d, [selected]: value }))} onSend={send} mode={sendMode} setMode={setSendMode} providerId={providerId} providerName={providerName} busy={!!busy} enabled={!!canWrite} hasQueue={!!queue.length} hasGoal={!!thread?.goalState?.goal} onFiles={() => setFilesOpen(true)} onNewChat={showNewChat} />
+          </div>
           <div className="composer-caption">{busy || (sendMode === 'queue' ? `原生队列由 ${providerName} 自动执行，空闲时可能立即开始` : stat.tone === 'green' ? '运行中发送会追加到当前对话 · ⌘ / Ctrl + Enter 发送' : '在同一对话继续下一轮 · ⌘ / Ctrl + Enter 发送')}</div>
         </div>
       </>}
@@ -599,10 +601,10 @@ function ModelStatus({ thread, online }: { thread?: Thread; online: boolean }) {
   </div>;
 }
 
-function Composer({ mobile, value, onChange, onSend, mode, setMode, providerId, providerName, busy, enabled, hasQueue, onFiles, onNewChat }: {
+function Composer({ mobile, value, onChange, onSend, mode, setMode, providerId, providerName, busy, enabled, hasQueue, hasGoal, onFiles, onNewChat }: {
   mobile: boolean; value: string; onChange: (value: string) => void; onSend: () => void;
   mode: 'send' | 'queue'; setMode: (mode: 'send' | 'queue') => void;
-  providerId: ProviderId; providerName: string; busy: boolean; enabled: boolean; hasQueue: boolean;
+  providerId: ProviderId; providerName: string; busy: boolean; enabled: boolean; hasQueue: boolean; hasGoal: boolean;
   onFiles: () => void; onNewChat: () => void;
 }) {
   const [focused, setFocused] = useState(false);
@@ -610,7 +612,7 @@ function Composer({ mobile, value, onChange, onSend, mode, setMode, providerId, 
   const form = useRef<HTMLFormElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const tools = useRef<HTMLButtonElement>(null);
-  const expanded = !mobile || focused || !!value || mode === 'queue' || hasQueue || menuOpen;
+  const expanded = !mobile || focused || !!value || mode === 'queue' || hasQueue || hasGoal || menuOpen;
   useLayoutEffect(() => {
     const element = input.current;
     if (!element) return;

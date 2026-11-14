@@ -37,25 +37,39 @@ class GitHubRedirects(HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, message, headers, newurl)
 
 
-def download(url, target=None, limit=MAX_DOWNLOAD):
+def progress_event(callback, stage, **values):
+    if callback:
+        callback({'event': 'update-progress', 'stage': stage, **values})
+
+
+def download(url, target=None, limit=MAX_DOWNLOAD, progress=None, expected_size=None):
     # Transient CDN failures must never switch the installed release. Retry a
     # fresh bounded transfer; integrity checks still happen after completion.
     for attempt in range(3):
-        try: return _download_once(url, target, limit)
+        try: return _download_once(url, target, limit, progress, expected_size)
         except (URLError, TimeoutError, ConnectionError, IncompleteRead) as error:
             if isinstance(error, HTTPError) and error.code not in {429, 500, 502, 503, 504}: raise
             if attempt == 2: raise
+            progress_event(progress, 'retrying', attempt=attempt + 2)
             time.sleep(.5 * (2 ** attempt))
 
 
-def _download_once(url, target=None, limit=MAX_DOWNLOAD):
+def _download_once(url, target=None, limit=MAX_DOWNLOAD, progress=None, expected_size=None):
     github_url(url)
     request = Request(url, headers={'User-Agent': 'AIRemote-Updater', 'Accept': 'application/vnd.github+json'})
     opener = build_opener(GitHubRedirects())
     digest = hashlib.sha256(); total = 0; chunks = []
     output = open(target, 'wb') if target else None
     try:
+        progress_event(progress, 'connecting', downloadedBytes=0)
         with opener.open(request, timeout=45) as response:
+            try: length = int(response.headers.get('Content-Length', '0'))
+            except (TypeError, ValueError): length = 0
+            length = length if length > 0 else expected_size
+            if length is not None and length > limit:
+                raise ValueError('Release download exceeds size limit')
+            started = last_event = time.monotonic()
+            progress_event(progress, 'downloading', downloadedBytes=0, totalBytes=length, bytesPerSecond=0)
             while True:
                 block = response.read(65536)
                 if not block: break
@@ -64,6 +78,13 @@ def _download_once(url, target=None, limit=MAX_DOWNLOAD):
                 digest.update(block)
                 if output: output.write(block)
                 else: chunks.append(block)
+                current = time.monotonic()
+                if current - last_event >= .1:
+                    progress_event(progress, 'downloading', downloadedBytes=total, totalBytes=length,
+                                   bytesPerSecond=total / max(current - started, .001))
+                    last_event = current
+            progress_event(progress, 'downloading', downloadedBytes=total, totalBytes=length,
+                           bytesPerSecond=total / max(time.monotonic() - started, .001))
     except BaseException:
         if output: output.close(); Path(target).unlink(missing_ok=True)
         raise
@@ -72,8 +93,9 @@ def _download_once(url, target=None, limit=MAX_DOWNLOAD):
     return digest.hexdigest() if target else b''.join(chunks)
 
 
-def latest_release(repo=DEFAULT_REPO):
+def latest_release(repo=DEFAULT_REPO, progress=None):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo): raise ValueError('Invalid GitHub repository')
+    progress_event(progress, 'checking')
     release = json.loads(download('https://api.github.com/repos/' + repo + '/releases/latest', limit=2 * 1024 * 1024))
     version_tuple(release['tag_name'])
     if release.get('draft') or release.get('prerelease'): raise ValueError('Stable updates cannot install a pre-release')
@@ -98,13 +120,16 @@ def release_asset(release, name, repo=DEFAULT_REPO):
             fields = line.split(maxsplit=1)
             if len(fields) == 2 and fields[1].lstrip('*') == name: digest = fields[0]
     if not digest or not re.fullmatch(r'[0-9a-fA-F]{64}', digest): raise ValueError('Asset has no valid SHA-256 digest')
-    return {'name': name, 'url': expected_url, 'sha256': digest.lower()}
+    size = asset.get('size')
+    return {'name': name, 'url': expected_url, 'sha256': digest.lower(),
+            'size': size if type(size) is int and size > 0 else None}
 
 
-def fetch_asset(asset, directory):
+def fetch_asset(asset, directory, progress=None):
     directory = Path(directory); directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     target = directory / asset['name']; partial = target.with_suffix(target.suffix + '.partial')
-    actual = download(asset['url'], partial)
+    actual = download(asset['url'], partial, progress=progress, expected_size=asset.get('size')) if progress else download(asset['url'], partial)
+    progress_event(progress, 'verifying')
     if actual != asset['sha256']:
         partial.unlink(missing_ok=True); raise ValueError('Release checksum mismatch; installation stopped')
     partial.replace(target)
@@ -120,7 +145,8 @@ def archive_path(name, root):
     return target
 
 
-def extract_zip(archive, directory):
+def extract_zip(archive, directory, progress=None):
+    progress_event(progress, 'extracting')
     root = Path(directory).resolve(); root.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive) as source:
         entries = source.infolist()

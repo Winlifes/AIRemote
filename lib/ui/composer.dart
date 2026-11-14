@@ -1,0 +1,1009 @@
+// The Markdown renderer still uses the SDK Material types.
+// ignore: deprecated_member_use
+import 'package:flutter/material.dart';
+import '../core/api.dart';
+import '../core/workspace.dart';
+import 'app.dart';
+
+class ComposerDock extends StatefulWidget {
+  final Workspace state;
+  final VoidCallback files, newChat;
+  final bool keyboardVisible;
+  const ComposerDock({
+    super.key,
+    required this.state,
+    required this.files,
+    required this.newChat,
+    this.keyboardVisible = false,
+  });
+  @override
+  State<ComposerDock> createState() => _ComposerDockState();
+}
+
+class _ComposerDockState extends State<ComposerDock> {
+  final input = TextEditingController(), focus = FocusNode();
+  @override
+  void initState() {
+    super.initState();
+    focus.addListener(_focusChanged);
+  }
+
+  void _focusChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    focus.removeListener(_focusChanged);
+    focus.dispose();
+    input.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = widget.state;
+    if (input.text != state.draft) {
+      input.value = TextEditingValue(
+        text: state.draft,
+        selection: TextSelection.collapsed(offset: state.draft.length),
+      );
+    }
+    final goal = state.goal;
+    final expanded =
+        focus.hasFocus ||
+        input.text.isNotEmpty ||
+        state.sendMode == 'queue' ||
+        state.queue.isNotEmpty ||
+        goal != null;
+    final bottom = widget.keyboardVisible
+        ? 8.0
+        : MediaQuery.viewPaddingOf(context).bottom + 10;
+    final settings = state.online && !state.laneErrors.containsKey('thread')
+        ? (state.chat?['modelSettings'] as Map?)
+        : null;
+    const models = {
+      'gpt-6.1-sol': 'GPT-6.1 Sol',
+      'gpt-6-astra': 'GPT-6 Astra',
+      'gpt-6.1-terra': 'GPT-6.1 Terra',
+    };
+    final result = state.receipt['result'] as Map?;
+    final delivery = state.receipt['delivery'] as Map?;
+    final deliveryText = delivery?['turnStatus'] == 'completed'
+        ? '这一轮已完成 · 已核对桌面对话'
+        : delivery?['receivedInHistory'] == true
+        ? '同一对话已收到 · 等待后续回复'
+        : result?['deliveryState'] == 'queued'
+        ? '已保存到原生队列 · 等待执行'
+        : state.receipt['operationId'] != null &&
+              [
+                'send',
+                'queue_send',
+                'queue_add',
+                'create',
+              ].contains(state.receipt['kind'])
+        ? 'Mac 已受理 · 正在核对原对话'
+        : null;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(12, 5, 12, bottom),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 900),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (state.notice.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 5),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        state.notice,
+                        style: const TextStyle(fontSize: 10, color: muted),
+                      ),
+                    ),
+                    InkWell(
+                      onTap: () {
+                        state.notice = '';
+                        state.changed();
+                      },
+                      child: const Padding(
+                        padding: EdgeInsets.all(6),
+                        child: Icon(Icons.close, size: 12, color: muted),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            if (deliveryText != null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 7, bottom: 6),
+                  child: Text(
+                    deliveryText,
+                    style: const TextStyle(fontSize: 11, color: muted),
+                  ),
+                ),
+              ),
+            if (state.provider == 'codex')
+              Padding(
+                padding: const EdgeInsets.fromLTRB(7, 0, 7, 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        settings == null
+                            ? '模型设置待同步'
+                            : '${models[settings['model']] ?? settings['model'] ?? '模型待同步'}${settings['reasoningEffort'] == null ? '' : ' · ${settings['reasoningEffort']}'}',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 11, color: muted),
+                      ),
+                    ),
+                    if (settings?['collaborationMode'] != null)
+                      Text(
+                        settings!['collaborationMode'] == 'plan' ? '计划' : '工作',
+                        style: const TextStyle(fontSize: 11, color: muted),
+                      ),
+                    if (settings?['permissionMode'] == 'dangerFullAccess')
+                      const Padding(
+                        padding: EdgeInsets.only(left: 9),
+                        child: Text(
+                          '完全访问',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Color(0xffa0763b),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            if (goal != null) GoalDock(state: state),
+            if (state.queue.isNotEmpty) _QueueDock(state: state),
+            // The overlapping outline belongs to the composer, like the source app.
+            Container(
+              key: const Key('message-composer'),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                border: Border.all(color: const Color(0xffe7e7eb)),
+                borderRadius: BorderRadius.circular(expanded ? 26 : 34),
+              ),
+              padding: expanded
+                  ? const EdgeInsets.fromLTRB(16, 10, 8, 7)
+                  : const EdgeInsets.fromLTRB(5, 5, 5, 5),
+              child: expanded
+                  ? Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        TextField(
+                          controller: input,
+                          focusNode: focus,
+                          minLines: 1,
+                          maxLines: 5,
+                          textCapitalization: TextCapitalization.sentences,
+                          style: const TextStyle(fontSize: 16, height: 1.6),
+                          decoration: InputDecoration(
+                            hintText: state.sendMode == 'queue'
+                                ? '写下下一步指令…'
+                                : '用 ${state.providerName} 工作',
+                            border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
+                            fillColor: Colors.transparent,
+                            contentPadding: const EdgeInsets.symmetric(
+                              vertical: 5,
+                            ),
+                            isDense: true,
+                          ),
+                          onChanged: state.setDraft,
+                        ),
+                        Row(
+                          children: [
+                            _actions(context),
+                            const Spacer(),
+                            PopupMenuButton<String>(
+                              tooltip: '指令发送方式',
+                              initialValue: state.sendMode,
+                              onSelected: (value) {
+                                state.sendMode = value;
+                                state.changed();
+                                focus.requestFocus();
+                              },
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(
+                                  value: 'send',
+                                  child: Text('立即发送'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'queue',
+                                  child: Text('加入原生队列'),
+                                ),
+                              ],
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 9,
+                                  vertical: 12,
+                                ),
+                                child: Text(
+                                  state.sendMode == 'queue'
+                                      ? '加入队列'
+                                      : state.providerName,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: muted,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            _send(state),
+                          ],
+                        ),
+                      ],
+                    )
+                  : Row(
+                      children: [
+                        _actions(context),
+                        Expanded(
+                          child: TextField(
+                            controller: input,
+                            focusNode: focus,
+                            maxLines: 1,
+                            decoration: InputDecoration(
+                              hintText: '用 ${state.providerName} 工作',
+                              border: InputBorder.none,
+                              enabledBorder: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                              fillColor: Colors.transparent,
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 5,
+                              ),
+                              isDense: true,
+                            ),
+                            onChanged: state.setDraft,
+                          ),
+                        ),
+                        _send(state),
+                      ],
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _send(Workspace state) => IconButton.filled(
+    style: IconButton.styleFrom(
+      backgroundColor: const Color(0xff141414),
+      foregroundColor: Colors.white,
+      disabledBackgroundColor: const Color(0xffe4e4e8),
+      fixedSize: const Size(40, 40),
+    ),
+    tooltip: state.sendMode == 'queue' ? '加入队列' : '发送指令',
+    onPressed: !state.canWrite || state.draft.trim().isEmpty
+        ? null
+        : () async {
+            await state.send();
+          },
+    icon: state.busy
+        ? const SizedBox.square(
+            dimension: 17,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Colors.white,
+            ),
+          )
+        : Icon(
+            state.sendMode == 'queue' ? Icons.playlist_add : Icons.arrow_upward,
+            size: 23,
+          ),
+  );
+  Widget _actions(BuildContext context) => PopupMenuButton<String>(
+    tooltip: '对话操作',
+    icon: const Icon(Icons.add, color: ink, size: 26),
+    position: PopupMenuPosition.over,
+    onSelected: (value) {
+      switch (value) {
+        case 'send':
+        case 'queue':
+          widget.state.sendMode = value;
+          widget.state.changed();
+          focus.requestFocus();
+        case 'files':
+          widget.files();
+        case 'new':
+          widget.newChat();
+      }
+    },
+    itemBuilder: (_) => [
+      const PopupMenuItem(
+        value: 'send',
+        child: ListTile(
+          dense: true,
+          leading: Icon(Icons.arrow_upward, size: 20),
+          title: Text('立即发送'),
+        ),
+      ),
+      const PopupMenuItem(
+        value: 'queue',
+        child: ListTile(
+          dense: true,
+          leading: Icon(Icons.playlist_add, size: 20),
+          title: Text('加入原生队列'),
+        ),
+      ),
+      const PopupMenuDivider(),
+      const PopupMenuItem(
+        value: 'files',
+        child: ListTile(
+          dense: true,
+          leading: Icon(Icons.folder_outlined, size: 20),
+          title: Text('对话文件'),
+        ),
+      ),
+      PopupMenuItem(
+        value: 'new',
+        enabled: widget.state.canWrite,
+        child: const ListTile(
+          dense: true,
+          leading: Icon(Icons.add_comment_outlined, size: 20),
+          title: Text('新建对话'),
+        ),
+      ),
+    ],
+  );
+}
+
+class GoalDock extends StatelessWidget {
+  final Workspace state;
+  const GoalDock({super.key, required this.state});
+  @override
+  Widget build(BuildContext context) {
+    final goal = state.goal!;
+    final enabled =
+        state.online && state.goalState?['writable'] == true && !state.busy;
+    return Container(
+      key: const Key('goal-dock'),
+      margin: const EdgeInsets.symmetric(horizontal: 10),
+      padding: const EdgeInsets.fromLTRB(12, 5, 4, 6),
+      decoration: const BoxDecoration(
+        color: Color(0xffefeff1),
+        border: Border(
+          top: BorderSide(color: Color(0xffe4e4e8)),
+          left: BorderSide(color: Color(0xffe4e4e8)),
+          right: BorderSide(color: Color(0xffe4e4e8)),
+        ),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(19)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.track_changes_outlined, size: 18, color: muted),
+          const SizedBox(width: 8),
+          Expanded(
+            child: InkWell(
+              onTap: () => showGoal(context, state),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 5),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      goalLabel(goal['status']),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Text(
+                      '${goal['objective']}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11, color: muted),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            durationLabel(goal['timeUsedSeconds'] as num?),
+            key: const Key('goal-duration'),
+            style: const TextStyle(
+              fontSize: 10,
+              color: muted,
+              fontFamily: 'monospace',
+            ),
+          ),
+          IconButton(
+            tooltip: '关闭目标',
+            onPressed: enabled ? () => confirmCloseGoal(context, state) : null,
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 33, height: 40),
+            icon: const Icon(Icons.delete_outline, size: 18),
+          ),
+          IconButton(
+            tooltip: goal['status'] == 'active' ? '暂停目标' : '继续目标',
+            onPressed: enabled
+                ? () => state.goalAction('PATCH', {
+                    'status': goal['status'] == 'active' ? 'paused' : 'active',
+                  })
+                : null,
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 33, height: 40),
+            icon: Icon(
+              goal['status'] == 'active'
+                  ? Icons.pause_circle_outline
+                  : Icons.play_circle_outline,
+              size: 19,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _QueueDock extends StatelessWidget {
+  final Workspace state;
+  const _QueueDock({required this.state});
+  @override
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.symmetric(horizontal: 10),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      border: Border.all(color: const Color(0xffe8e8ec)),
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+    ),
+    constraints: const BoxConstraints(maxHeight: 170),
+    child: SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var index = 0; index < state.queue.length; index++)
+            _row(context, state.queue[index], index),
+        ],
+      ),
+    ),
+  );
+  Widget _row(BuildContext context, Json item, int index) => Padding(
+    padding: const EdgeInsets.only(left: 8, right: 2),
+    child: Row(
+      children: [
+        const Icon(Icons.subdirectory_arrow_right, size: 16, color: muted),
+        const SizedBox(width: 7),
+        Expanded(
+          child: Text(
+            queueText(item),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 13),
+          ),
+        ),
+        IconButton(
+          tooltip: '立即执行队列指令',
+          visualDensity: VisualDensity.compact,
+          onPressed: state.canWrite
+              ? () => state.queueAction('send', item: item)
+              : null,
+          icon: const Icon(Icons.turn_right, size: 20, color: muted),
+        ),
+        IconButton(
+          tooltip: '删除队列指令',
+          visualDensity: VisualDensity.compact,
+          onPressed: state.canWrite
+              ? () => state.queueAction('delete', item: item)
+              : null,
+          icon: const Icon(Icons.delete_outline, size: 18, color: muted),
+        ),
+        PopupMenuButton<String>(
+          tooltip: '队列更多操作',
+          enabled: state.canWrite,
+          icon: const Icon(Icons.more_horiz, size: 20, color: muted),
+          onSelected: (action) async {
+            if (action == 'edit') {
+              final text = await textEditor(context, '编辑队列指令', queueText(item));
+              if (text != null) {
+                await state.queueAction('edit', item: item, text: text);
+              }
+            }
+            if (action == 'up' || action == 'down') {
+              final ids = state.queue.map((v) => v['id'] as String).toList();
+              final to = index + (action == 'up' ? -1 : 1);
+              if (to < 0 || to >= ids.length) return;
+              final old = ids[index];
+              ids[index] = ids[to];
+              ids[to] = old;
+              await state.queueAction('order', ids: ids);
+            }
+            if (action == 'clear' && context.mounted) {
+              final ok = await showDialog<bool>(
+                context: context,
+                builder: (c) => AlertDialog(
+                  title: const Text('清空当前队列？'),
+                  content: const Text('已发送的消息和正在执行的任务会保留。'),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(c, false),
+                      child: const Text('保留'),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(c, true),
+                      child: const Text('清空'),
+                    ),
+                  ],
+                ),
+              );
+              if (ok == true) {
+                await state.queueAction(
+                  'clear',
+                  ids: state.queue.map((v) => v['id'] as String).toList(),
+                );
+              }
+            }
+          },
+          itemBuilder: (_) => [
+            const PopupMenuItem(value: 'edit', child: Text('编辑指令')),
+            if ((state.descriptor['features'] as List? ?? []).contains(
+              'queue-reorder',
+            )) ...[
+              PopupMenuItem(
+                value: 'up',
+                enabled: index > 0,
+                child: const Text('向上移'),
+              ),
+              PopupMenuItem(
+                value: 'down',
+                enabled: index < state.queue.length - 1,
+                child: const Text('向下移'),
+              ),
+            ],
+            const PopupMenuItem(value: 'clear', child: Text('清空队列')),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+
+Future<String?> textEditor(
+  BuildContext context,
+  String title,
+  String initial,
+) async {
+  final controller = TextEditingController(text: initial);
+  final value = await showDialog<String>(
+    context: context,
+    builder: (c) => AlertDialog(
+      title: Text(title),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        minLines: 3,
+        maxLines: 8,
+        decoration: const InputDecoration(hintText: '输入指令'),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(c), child: const Text('取消')),
+        TextButton(
+          onPressed: () {
+            if (controller.text.trim().isNotEmpty) {
+              Navigator.pop(c, controller.text.trim());
+            }
+          },
+          child: const Text('保存'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  return value;
+}
+
+Future<void> confirmCloseGoal(BuildContext context, Workspace state) async {
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (c) => AlertDialog(
+      title: const Text('关闭这个目标？'),
+      content: const Text('目标会从当前对话移除，停止自动推进。聊天消息会保留，当前轮次仍可能继续。'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(c, false),
+          child: const Text('保留目标'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(c, true),
+          child: const Text('关闭目标', style: TextStyle(color: Color(0xffb16469))),
+        ),
+      ],
+    ),
+  );
+  if (ok == true) await state.goalAction('DELETE', {});
+}
+
+void showGoal(BuildContext context, Workspace state) {
+  showModalBottomSheet<void>(
+    context: context,
+    useSafeArea: true,
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (_) => GoalSheet(state: state),
+  );
+}
+
+class GoalSheet extends StatefulWidget {
+  final Workspace state;
+  const GoalSheet({super.key, required this.state});
+  @override
+  State<GoalSheet> createState() => _GoalSheetState();
+}
+
+class _GoalSheetState extends State<GoalSheet> {
+  final objective = TextEditingController(), budget = TextEditingController();
+  bool editing = false, paused = false, submitting = false;
+  String? revision;
+  @override
+  void initState() {
+    super.initState();
+    reset();
+    editing = widget.state.goal == null;
+  }
+
+  void reset() {
+    objective.text = widget.state.goal?['objective'] ?? '';
+    budget.text = widget.state.goal?['tokenBudget']?.toString() ?? '';
+    revision = widget.state.goalState?['revision'];
+  }
+
+  @override
+  void dispose() {
+    objective.dispose();
+    budget.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.state,
+    builder: (_, _) {
+      final state = widget.state, goal = state.goal;
+      final enabled =
+          state.online &&
+          state.goalState?['writable'] == true &&
+          !state.busy &&
+          !submitting;
+      final stale = editing && revision != state.goalState?['revision'];
+      return SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(
+            22,
+            0,
+            22,
+            MediaQuery.viewInsetsOf(context).bottom + 22,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Text(
+                    goal == null ? '设置对话目标' : '对话目标',
+                    style: const TextStyle(
+                      fontSize: 21,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    tooltip: '关闭目标详情',
+                    onPressed: submitting ? null : () => Navigator.pop(context),
+                    icon: const Icon(Icons.close, size: 20),
+                  ),
+                ],
+              ),
+              if (state.goalState?['writable'] != true)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  child: Text(
+                    state.goalState?['message'] ?? '目标状态暂未同步',
+                    style: const TextStyle(color: muted, fontSize: 13),
+                  ),
+                ),
+              if (state.error.isNotEmpty)
+                Text(
+                  state.error,
+                  style: const TextStyle(color: Colors.red, fontSize: 12),
+                ),
+              if (editing || goal == null) ...[
+                const SizedBox(height: 12),
+                TextField(
+                  controller: objective,
+                  minLines: 3,
+                  maxLines: 8,
+                  maxLength: 32000,
+                  decoration: const InputDecoration(
+                    labelText: '目标',
+                    hintText: '告诉 Codex 需要持续完成什么…',
+                  ),
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: budget,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Token 预算（可选）',
+                    hintText: '留空使用默认预算',
+                  ),
+                ),
+                if (goal == null)
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: paused,
+                    onChanged: (v) => setState(() {
+                      paused = v ?? false;
+                    }),
+                    title: const Text(
+                      '先保存为暂停状态',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                    controlAffinity: ListTileControlAffinity.leading,
+                  ),
+                if (stale)
+                  const Text(
+                    '目标已经变化，请返回查看最新状态后再修改。',
+                    style: TextStyle(color: Colors.red, fontSize: 12),
+                  ),
+                const SizedBox(height: 15),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton(
+                    onPressed: !enabled || stale
+                        ? null
+                        : () async {
+                            final tokens = budget.text.trim().isEmpty
+                                ? null
+                                : int.tryParse(budget.text);
+                            if (objective.text.trim().isEmpty ||
+                                (budget.text.trim().isNotEmpty &&
+                                    (tokens == null || tokens <= 0))) {
+                              return;
+                            }
+                            setState(() {
+                              submitting = true;
+                            });
+                            final ok = await state
+                                .goalAction(goal == null ? 'POST' : 'PATCH', {
+                                  'objective': objective.text.trim(),
+                                  'tokenBudget': tokens,
+                                  if (goal == null)
+                                    'status': paused ? 'paused' : 'active',
+                                });
+                            if (mounted) {
+                              setState(() {
+                                submitting = false;
+                              });
+                              if (ok && context.mounted) Navigator.pop(context);
+                            }
+                          },
+                    child: Text(
+                      goal == null
+                          ? paused
+                                ? '保存目标'
+                                : '开始目标'
+                          : '保存修改',
+                    ),
+                  ),
+                ),
+              ] else ...[
+                const SizedBox(height: 12),
+                Text(
+                  goalLabel(goal['status']),
+                  style: const TextStyle(color: muted, fontSize: 12),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  '${goal['objective']}',
+                  style: const TextStyle(fontSize: 16, height: 1.8),
+                ),
+                const SizedBox(height: 18),
+                Text(
+                  '已用 ${goal['tokensUsed'] ?? 0} tokens${goal['tokenBudget'] == null ? '' : ' / ${goal['tokenBudget']}'} · 已处理 ${durationLabel(goal['timeUsedSeconds'] as num?)}',
+                  style: const TextStyle(color: muted, fontSize: 12),
+                ),
+                const SizedBox(height: 18),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: enabled
+                          ? () => setState(() {
+                              reset();
+                              editing = true;
+                            })
+                          : null,
+                      icon: const Icon(Icons.edit_outlined, size: 16),
+                      label: const Text('修改目标'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: enabled
+                          ? () => state.goalAction('PATCH', {
+                              'status': goal['status'] == 'active'
+                                  ? 'paused'
+                                  : 'active',
+                            })
+                          : null,
+                      icon: Icon(
+                        goal['status'] == 'active'
+                            ? Icons.pause
+                            : Icons.play_arrow,
+                        size: 17,
+                      ),
+                      label: Text(goal['status'] == 'active' ? '暂停目标' : '继续目标'),
+                    ),
+                    OutlinedButton(
+                      onPressed: enabled
+                          ? () async {
+                              await confirmCloseGoal(context, state);
+                              if (context.mounted && state.goal == null) {
+                                Navigator.pop(context);
+                              }
+                            }
+                          : null,
+                      child: const Text('关闭目标'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 15),
+                const Text(
+                  '暂停后不再自动推进目标，正在执行的这一轮仍可能继续。',
+                  style: TextStyle(fontSize: 11, color: muted, height: 1.7),
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
+void showNewChat(BuildContext context, Workspace state) {
+  showModalBottomSheet<void>(
+    context: context,
+    useSafeArea: true,
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (_) => NewChatSheet(state: state),
+  );
+}
+
+class NewChatSheet extends StatefulWidget {
+  final Workspace state;
+  const NewChatSheet({super.key, required this.state});
+  @override
+  State<NewChatSheet> createState() => _NewChatSheetState();
+}
+
+class _NewChatSheetState extends State<NewChatSheet> {
+  final title = TextEditingController(), message = TextEditingController();
+  String? cwd;
+  bool submitting = false;
+  @override
+  void initState() {
+    super.initState();
+    cwd = widget.state.projects
+        .expand((v) => (v['roots'] as List? ?? []).cast<String>())
+        .firstOrNull;
+  }
+
+  @override
+  void dispose() {
+    title.dispose();
+    message.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.state,
+    builder: (_, _) {
+      final paths = widget.state.projects
+          .expand((v) => (v['roots'] as List? ?? []).cast<String>())
+          .toSet()
+          .toList();
+      return SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(
+            22,
+            0,
+            22,
+            MediaQuery.viewInsetsOf(context).bottom + 22,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                '新建对话',
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 18),
+              DropdownButtonFormField<String>(
+                initialValue: cwd,
+                isExpanded: true,
+                items: paths
+                    .map(
+                      (p) => DropdownMenuItem(
+                        value: p,
+                        child: Text(
+                          p.split('/').last,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (v) => cwd = v,
+                decoration: const InputDecoration(labelText: '项目'),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: title,
+                decoration: const InputDecoration(
+                  labelText: '对话名称',
+                  hintText: '新的思路',
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: message,
+                minLines: 3,
+                maxLines: 7,
+                decoration: const InputDecoration(labelText: '第一条指令（可选）'),
+              ),
+              if (widget.state.error.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Text(
+                    widget.state.error,
+                    style: const TextStyle(color: Colors.red, fontSize: 12),
+                  ),
+                ),
+              const SizedBox(height: 20),
+              Align(
+                alignment: Alignment.centerRight,
+                child: FilledButton(
+                  onPressed: submitting || cwd == null
+                      ? null
+                      : () async {
+                          setState(() {
+                            submitting = true;
+                          });
+                          final ok = await widget.state.createChat(
+                            cwd!,
+                            title.text.trim().isEmpty
+                                ? '新对话'
+                                : title.text.trim(),
+                            message.text.trim(),
+                          );
+                          if (mounted) {
+                            setState(() {
+                              submitting = false;
+                            });
+                            if (ok && context.mounted) Navigator.pop(context);
+                          }
+                        },
+                  child: const Text('创建对话'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}

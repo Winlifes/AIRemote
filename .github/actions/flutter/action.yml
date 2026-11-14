@@ -1,0 +1,14 @@
+name: Install pinned Flutter
+description: Fetch the official stable SDK at a verified framework commit.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        sdk_path="$RUNNER_TEMP/airemote-flutter"
+        git clone --depth 1 --branch 3.50.0 https://github.com/flutter/flutter.git "$sdk_path"
+        test "$(git -C "$sdk_path" rev-parse HEAD)" = ab2912035e160d9cad6306df307576da6128ebdb
+        echo "$sdk_path/bin" >> "$GITHUB_PATH"
+        "$sdk_path/bin/flutter" config --no-analytics
+        "$sdk_path/bin/flutter" --version

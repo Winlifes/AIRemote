@@ -70,7 +70,7 @@ python3 deploy/configure_mac.py \
 
 从 Releases 下载 Mac 应用，放入“应用程序”后打开；自定义配置位置可在应用中选择。源码启动可使用 `deploy/start_mac.py --config <mac-runtime.json>`。`--status` 只读，`--stop` 停止，`--restart` 重启；日志在配置旁的 `logs/`。关闭应用窗口后后台服务继续运行。
 
-Mac 安装包同时支持 Apple Silicon / Intel、macOS 13+，携带连接器代码，升级无需重新下载源码。默认每六小时检查 GitHub 稳定版，也可点“检查更新”；发现新版后点“更新并重启”。更新会保留配置、校验下载和代码签名，并在连接器启动失败时回退。安装包当前使用 ad-hoc 签名，尚未 Apple 公证；后续可在发布工作流中接入自己的 Developer ID。
+Mac 安装包同时支持 Apple Silicon / Intel、macOS 13+，携带连接器代码，升级无需重新下载源码。默认每六小时检查 GitHub 稳定版，也可点“检查更新”；发现新版后点“更新并重启”。检查、下载、校验、解压和安装分别显示阶段，下载时展示百分比、已下载字节和速率。更新会保留配置、校验下载和代码签名，并在连接器启动失败时回退。安装包当前使用 ad-hoc 签名，尚未 Apple 公证；后续可在发布工作流中接入自己的 Developer ID。
 
 使用自定义配置目录时，新版本首次打开会让你选择一次原配置文件夹。选择原目录后继续启动；取消可稍后重选，界面不会无限等待目录授权。GitHub 下载遇到临时网络故障会有界限地重试，校验失败始终停止更新。
 
@@ -78,7 +78,7 @@ DeepSeek 使用 `deploy/install_deepseek.py` 注册本机 companion，仅将当�
 
 ### Codex 对话目标
 
-打开聊天后，点击顶部的靶心图标。进行中的目标会在消息上方显示一行摘要；详情包含状态、已用 tokens、可选预算和处理时间。暂停会停止目标的自动推进，当前轮次可能继续；关闭会移除目标，保留对话消息。继续或创建活动目标会恢复自动执行。
+打开聊天后，点击顶部的靶心图标。目标状态条直接附在输入框上方；详情包含状态、已用 tokens、可选预算和处理时间。暂停会停止目标的自动推进，当前轮次可能继续；关闭会移除目标，保留对话消息。继续或创建活动目标会恢复自动执行。
 
 目标控制使用 Codex 的 `CODEX_CLI_PATH` 启动配置接入原桌面进程的 stdio；不修改 Codex 安装包，不另开 SDK 对话。首次启用需先正常退出 Codex，再点击 Mac AIRemote 的“通过目标通道启动 Codex”。之后在 Codex 打开原有聊天。这个入口不会自动关闭运行中的 Codex 或任务。日常从此按钮启动 Codex；直接打开原 Codex 图标时，目标仍可读取，修改按钮会提示启用通道。
 
@@ -88,22 +88,29 @@ DeepSeek 使用 `deploy/install_deepseek.py` 注册本机 companion，仅将当�
 
 0.7.1 修正桌面握手兼容：观察并转发原生 `initialize` 成功响应后启用通道，不等待 SDK 才会发送的 `initialized` 通知。0.7.0 已启动的透明代理仍在运行旧代码，更新后需要通过 Mac AIRemote 再次正常打开 Codex；单独重启 AIRemote 服务不能替换 Codex 持有的 stdio 代理。
 
-## Android
+## Android / iOS（Flutter）
 
-下载 Releases 中的 `AIRemote-android.apk`，支持 Android 8+。首次填写自己的 HTTPS 服务器地址，再登录该服务器账号。APK 不内置服务器密码或 agent 凭据。
+Android 0.8.0 起使用 Flutter 组件渲染全部界面：原生路由、侧栏、聊天列表、输入框、队列和目标表单。客户端直接通过 HTTPS API 接入自己的中继，不加载网页 UI；React 网页仍可单独访问。
 
-应用使用同一服务端网页。文件交给系统下载管理器；更新通过 GitHub Releases 检查，并校验 SHA-256、包名、版本和现有安装签名，安装步骤由系统处理。
+下载 Releases 中的 `AIRemote-android.apk`，支持 Android 8+。包名和长期签名保留，原版本可覆盖升级。首次填写自己的 HTTPS 服务器地址，再登录该服务器账号；旧版本的地址和登录会话会迁移到加密存储。APK 不内置服务器密码或 agent 凭据。
 
-系统栏与刘海安全区由原生容器处理一次，向 WebView 传递归零后的对应 insets；输入法信息继续正常传递，避免顶部重复留白与键盘关闭后的残留空白。实现依据 [Android WebView window insets](https://developer.android.com/develop/ui/views/layout/webapps/understand-window-insets)。
+侧栏和遮罩覆盖整屏，内容控件避开系统栏和刘海；不在原生容器外层加空白安全区。键盘通过 Flutter 布局调整。项目展开后才拉取对话，选中聊天后才轮询最新消息、状态和队列，向上翻页才读取历史；前台恢复时重新同步，后台停止轮询。
 
-本地构建需要 JDK 17、Android SDK 35：
+文件交给 Android 系统下载管理器；iOS 使用系统分享面板保存文件。更新来自 GitHub Releases，持续显示百分比、已下载大小、总大小和速率；源站没有提供大小时显示不定进度。下载与 SHA-256 校验、安装包签名验证分别显示状态。关闭设置面板不会取消下载，再次打开可查看进度。系统安装需用户确认，并验证包名、递增版本和原安装签名。
+
+iOS 工程与 Android 共用 `lib/` 的界面、同步、队列、目标和下载代码，CI 验证模拟器构建。真机安装、TestFlight / App Store 发布仍需维护者配置 Apple 开发者签名；iOS 更新走苹果分发渠道。
+
+本地构建：Flutter **3.50.0**（框架提交 `ab2912035e160d9cad6306df307576da6128ebdb`）、JDK 17、Android SDK 36 / NDK 28.2.13676358；iOS 需 macOS 和 Xcode。
 
 ```sh
-cd android
-./gradlew testDebugUnitTest assembleDebug
+flutter pub get --enforce-lockfile
+flutter analyze
+flutter test
+flutter build apk --debug
+flutter build ios --simulator --no-codesign
 ```
 
-正式包使用长期签名密钥，通过 `AIREMOTE_KEYSTORE`、`AIREMOTE_KEYSTORE_PASSWORD`、`AIREMOTE_KEY_ALIAS`、`AIREMOTE_KEY_PASSWORD` 提供。不要丢失签名密钥，否则原应用无法直接升级。
+正式 APK 使用长期签名密钥，通过 `AIREMOTE_KEYSTORE`、`AIREMOTE_KEYSTORE_PASSWORD`、`AIREMOTE_KEY_ALIAS`、`AIREMOTE_KEY_PASSWORD` 提供，再运行 `flutter build apk --release`。不要丢失签名密钥，否则原应用无法直接升级。
 
 ## 开发与发布
 
@@ -118,9 +125,9 @@ npm --prefix web run build
 
 真实写入验证脚本必须显式提供授权聊天 ID；单元测试使用隔离合成数据。不要将聊天数据库、截图、日志或测试产物加入 Git。
 
-版本号在 `VERSION`。GitHub Actions 执行回归与构建。签名私钥仅放在维护者私有目录和 Actions Secrets。
+版本号在 `VERSION`，同步 `pubspec.yaml` 与网页 package 文件；Android versionCode 使用 `major * 1000000 + minor * 1000 + patch`。GitHub Actions 执行回归与构建。签名私钥仅放在维护者私有目录和 Actions Secrets。
 
-推送 `v<VERSION>` 标签会执行正式发布工作流：测试通过后构建签名 APK、通用 Mac 应用和包含网页的中继包，统一生成 `SHA256SUMS`，最后发布完整的 GitHub Release。Android 签名通过仓库 Secrets `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD` 配置；前三者中的 alias 应与 keystore 一致。只在受信任的发布标签中使用这些 Secrets，fork 需配置自己的签名。
+推送 `v<VERSION>` 标签会执行正式发布工作流：测试通过后构建签名 APK、通用 Mac 应用和包含网页的中继包，同时验证 iOS 模拟器构建，统一生成 `SHA256SUMS`，最后发布完整的 GitHub Release。Android 签名通过仓库 Secrets `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD` 配置；前三者中的 alias 应与 keystore 一致。只在受信任的发布标签中使用这些 Secrets，fork 需配置自己的签名。
 
 ```sh
 python3 macos/build_app.py --zip dist/AIRemote-macos.zip

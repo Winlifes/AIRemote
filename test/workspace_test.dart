@@ -1,0 +1,176 @@
+import 'dart:async';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:airemote_mobile/core/api.dart';
+import 'package:airemote_mobile/core/workspace.dart';
+import 'support.dart';
+
+void main() {
+  test(
+    'initial load fetches only projects; expansion and selection are lazy',
+    () async {
+      final api = FakeApi();
+      final w = Workspace(api);
+      addTearDown(w.dispose);
+      await w.start();
+      expect(api.calls.map((c) => c.path), ['/api/providers', '/api/projects']);
+      await w.loadProject('p');
+      expect(api.calls.last.path, '/api/projects/p/threads');
+      await w.select('a');
+      expect(api.calls.skip(3).map((c) => c.path).toSet(), {
+        '/api/threads/a',
+        '/api/threads/a/messages?limit=40',
+        '/api/threads/a/queue',
+      });
+      expect(api.calls.where((c) => c.path.contains('before=')), isEmpty);
+      await w.loadOlder();
+      expect(api.calls.last.path, contains('before=before-40'));
+    },
+  );
+  test(
+    'slow queue does not hold back messages; A B A discards stale replies',
+    () async {
+      final api = FakeApi();
+      final w = Workspace(api);
+      addTearDown(w.dispose);
+      await w.start();
+      final oldMessages = Completer<Json>(), slowQueue = Completer<Json>();
+      var aReads = 0;
+      api.respond = (c) {
+        if (c.path == '/api/threads/a/messages?limit=40' && aReads++ == 0) {
+          return oldMessages.future;
+        }
+        if (c.path == '/api/threads/a/queue' && !slowQueue.isCompleted) {
+          return slowQueue.future;
+        }
+        return FakeApi.defaultResponse(c);
+      };
+      final first = w.select('a');
+      await Future<void>.delayed(Duration.zero);
+      await w.select('b');
+      final latest = w.select('a');
+      await Future<void>.delayed(Duration.zero);
+      expect(w.messages.last['itemId'], 'm79');
+      expect(w.loading, false);
+      oldMessages.complete(page(0, 1));
+      slowQueue.complete({'items': []});
+      await Future.wait([first, latest]);
+      expect(w.messages.last['itemId'], 'm79');
+    },
+  );
+  test(
+    'history cursor survives overlapping refresh; disjoint page waits while reading',
+    () async {
+      final api = FakeApi();
+      final w = Workspace(api);
+      addTearDown(w.dispose);
+      await w.start();
+      await w.select('a');
+      api.respond = (c) => c.path.contains('before=')
+          ? page(0, 39)
+          : c.path.contains('/messages?')
+          ? page(42, 81)
+          : FakeApi.defaultResponse(c);
+      await w.loadOlder();
+      expect(w.messages.first['itemId'], 'm0');
+      expect(w.hasOlder, false);
+      await w.refreshChat();
+      expect(w.messages.first['itemId'], 'm0');
+      expect(w.messages.last['itemId'], 'm81');
+      api.respond = (c) => c.path.contains('/messages?')
+          ? page(100, 139)
+          : FakeApi.defaultResponse(c);
+      await w.refreshChat();
+      expect(w.messages.last['itemId'], 'm81');
+      expect(w.hasNewMessages, true);
+      w.jumpLatest();
+      expect(w.messages.first['itemId'], 'm100');
+      expect(w.olderCursor, 'before-100');
+    },
+  );
+  test(
+    'uncertain mutation retries same key and keeps unsent draft; new writes get fresh keys',
+    () async {
+      final api = FakeApi();
+      final w = Workspace(api);
+      addTearDown(w.dispose);
+      await w.start();
+      await w.select('a');
+      w.setDraft('下一步');
+      final keys = <String?>[];
+      api.respond = (c) {
+        if (c.method != 'GET') {
+          keys.add(c.key);
+          if (keys.length == 1) throw const ApiError('网络中断', 504, true);
+          return {
+            'operationId': 'op',
+            'result': {'threadId': 'a'},
+          };
+        }
+        return FakeApi.defaultResponse(c);
+      };
+      expect(await w.send(), false);
+      expect(w.draft, '下一步');
+      expect(await w.send(), true);
+      expect(w.draft, '');
+      expect(keys[0], keys[1]);
+      w.setDraft('下一步');
+      await w.send();
+      expect(keys.last, isNot(keys.first));
+    },
+  );
+  test(
+    'goal receipt updates immediately without waiting for queue and stale status cannot undo it',
+    () async {
+      final api = FakeApi();
+
+      final state = Workspace(api);
+      addTearDown(state.dispose);
+      await state.start();
+      await state.select('a');
+      final pendingStatus = Completer<Json>(), pendingQueue = Completer<Json>();
+      api.respond = (c) {
+        if (c.method == 'PATCH') {
+          return {
+            'requestStatus': 'applied',
+            'result': {
+              'threadId': 'a',
+              'acknowledged': true,
+              'nativeConfirmed': true,
+              'goal': {...demoGoal(), 'status': 'paused'},
+              'revision': 'revision-2',
+            },
+          };
+        }
+        if (c.path == '/api/threads/a') return pendingStatus.future;
+        if (c.path.endsWith('/queue')) return pendingQueue.future;
+        return FakeApi.defaultResponse(c);
+      };
+      final staleRead = state.refreshChat();
+      await Future<void>.delayed(Duration.zero);
+      expect(await state.goalAction('PATCH', {'status': 'paused'}), true);
+      expect(state.goal?['status'], 'paused');
+      expect(state.goalState?['revision'], 'revision-2');
+      pendingStatus.complete(thread('a', goal: demoGoal()));
+      pendingQueue.complete({'items': []});
+      await staleRead;
+      expect(state.goal?['status'], 'paused');
+    },
+  );
+  test('turn metadata keeps terminal status and seconds across pagination', () {
+    final merged = mergeTurns(
+      [
+        {
+          'turn_id': 'a',
+          'status': 'completed',
+          'started_at': 1,
+          'completed_at': 66,
+        },
+      ],
+      [
+        {'turn_id': 'a', 'status': 'inProgress'},
+      ],
+    );
+    expect(merged.single['completed_at'], 66);
+    expect(durationLabel(65), '1m 5s');
+  });
+}

@@ -46,6 +46,7 @@ struct GoalChannelStatus: Decodable {
     @Published var update: UpdateStatus?
     @Published var updating = false
     @Published var updateMessage = ""
+    @Published var updateProgress: UpdateProgress?
     @Published var goalChannel = GoalChannelStatus()
     @Published var goalMessage = ""
     @Published var autoCheck = UserDefaults.standard.object(forKey: "AutoCheckUpdates") as? Bool ?? true {
@@ -166,42 +167,54 @@ struct GoalChannelStatus: Decodable {
 
     func checkUpdates(manual: Bool = true) {
         guard !updating else { return }
-        updating = true
-        if manual { updateMessage = "正在检查 GitHub…" }
+        updating = true; updateProgress = UpdateProgress(stage: "checking")
+        updateMessage = "正在检查 GitHub 新版本…"
+        if manual { error = nil }
         Task {
-            let result = await Self.updateCommand(runtime: runtime, arguments: ["--check", "--current-version", version])
-            updating = false
+            let result = await Self.updateCommand(runtime: runtime, arguments: ["--check", "--current-version", version, "--progress"]) { [weak self] value in
+                self?.updateProgress = value; self?.updateMessage = value.title
+            }
+            updating = false; updateProgress = nil
             if result.0 == 0, let data = result.1.data(using: .utf8), let value = try? JSONDecoder().decode(UpdateStatus.self, from: data) {
                 update = value
                 UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "LastUpdateCheck")
-                updateMessage = value.available ? "新版本 \(value.latestVersion) 可用" : "已是最新版本"
+                updateMessage = value.available ? "新版本 \(value.latestVersion) 可用" : "已是最新版本 \(version)"
             } else {
                 UserDefaults.standard.set(Date().timeIntervalSince1970 - 5 * 3600, forKey: "LastUpdateCheck")
-                if manual { updateMessage = "暂时无法检查更新，请稍后重试" }
+                updateMessage = "检查更新未完成，请稍后重试"
+                if manual { error = Self.updateError(result.1) }
             }
         }
     }
 
     func installUpdate() {
         guard !updating && !busy else { return }
-        updating = true; updateMessage = "正在下载并校验更新…"
-        let arguments = ["--prepare", "--config", config.path, "--app", Bundle.main.bundleURL.path, "--current-version", version]
+        updating = true; error = nil; updateProgress = UpdateProgress(stage: "connecting")
+        updateMessage = updateProgress!.title
+        let arguments = ["--prepare", "--config", config.path, "--app", Bundle.main.bundleURL.path, "--current-version", version, "--progress"]
         Task {
-            let prepared = await Self.updateCommand(runtime: runtime, arguments: arguments)
+            let prepared = await Self.updateCommand(runtime: runtime, arguments: arguments) { [weak self] value in
+                self?.updateProgress = value; self?.updateMessage = value.title
+            }
             guard prepared.0 == 0, let data = prepared.1.data(using: .utf8),
                   let value = try? JSONDecoder().decode(UpdateStatus.self, from: data), let plan = value.plan else {
-                updating = false; updateMessage = "更新未安装"
-                error = String(prepared.1.suffix(1200)); return
+                updating = false; updateProgress = nil; updateMessage = "更新未安装"
+                error = Self.updateError(prepared.1); return
             }
-            updateMessage = "校验通过，正在重新启动…"
+            updateProgress = UpdateProgress(stage: "installing"); updateMessage = updateProgress!.title
             let launched = await Self.updateCommand(runtime: runtime, arguments: ["--launch-install", plan, "--wait-pid", String(ProcessInfo.processInfo.processIdentifier)])
             if launched.0 == 0 { NSApplication.shared.terminate(nil) }
-            else { updating = false; updateMessage = "更新未安装"; error = String(launched.1.suffix(1200)) }
+            else { updating = false; updateProgress = nil; updateMessage = "更新未安装"; error = Self.updateError(launched.1) }
         }
     }
 
-    nonisolated private static func updateCommand(runtime: URL, arguments: [String]) async -> (Int32, String) {
-        await process([runtime.appendingPathComponent("deploy/update_mac.py").path] + arguments, timeout: 300)
+    nonisolated private static func updateCommand(runtime: URL, arguments: [String], progress: (@MainActor @Sendable (UpdateProgress) -> Void)? = nil) async -> (Int32, String) {
+        await UpdaterProcess.run([runtime.appendingPathComponent("deploy/update_mac.py").path] + arguments, progress: progress)
+    }
+
+    nonisolated private static func updateError(_ text: String) -> String {
+        if let data = text.data(using: .utf8), let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let message = value["error"] as? String { return message }
+        return String(text.suffix(1200))
     }
 
     nonisolated private static func goalCommand(runtime: URL, action: String) async -> (Int32, String) {
@@ -298,14 +311,20 @@ struct ControlView: View {
             HStack {
                 Text("版本 \(model.version)").font(.system(size: 12)).foregroundStyle(.secondary)
                 Spacer()
-                if model.updating { ProgressView().controlSize(.small) }
-                Button("检查更新") { model.checkUpdates() }.disabled(model.updating)
+                Button(model.updating ? "更新处理中…" : "检查更新") { model.checkUpdates() }.disabled(model.updating)
                 if model.update?.available == true {
                     Button("更新并重启") { model.installUpdate() }.buttonStyle(.borderedProminent).disabled(model.updating || model.busy)
                 }
             }
             Toggle("自动检查 GitHub 更新", isOn: $model.autoCheck).toggleStyle(.checkbox).font(.system(size: 12))
-            if !model.updateMessage.isEmpty { Text(model.updateMessage).font(.system(size: 11)).foregroundStyle(.secondary) }
+            if model.updating, let progress = model.updateProgress {
+                VStack(alignment: .leading, spacing: 7) {
+                    if let fraction = progress.fraction { ProgressView(value: fraction).accessibilityLabel("更新下载进度").accessibilityValue("\(Int(fraction * 100))%") }
+                    else { ProgressView().progressViewStyle(.linear).accessibilityLabel("更新处理进度") }
+                    Text(model.updateMessage).font(.system(size: 12, weight: .medium)).accessibilityAddTraits(.updatesFrequently)
+                    if let detail = progress.detail { Text(detail).font(.system(size: 11)).monospacedDigit().foregroundStyle(.secondary) }
+                }
+            } else if !model.updateMessage.isEmpty { Text(model.updateMessage).font(.system(size: 11)).foregroundStyle(.secondary) }
             if let error = model.error {
                 ScrollView { Text(error).font(.system(size: 11)).foregroundStyle(.red).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                     .frame(maxHeight: 110)
