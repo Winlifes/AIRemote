@@ -47,17 +47,24 @@ struct UpdateStatus: Decodable {
     var config: URL { project.appendingPathComponent(".local/mac-runtime.json") }
     var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0" }
     var runtime: URL { Bundle.main.resourceURL!.appendingPathComponent("runtime", isDirectory: true) }
+    var needsFolderAccess: Bool {
+        let home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/AIRemote").path
+        return project.path != home && UserDefaults.standard.string(forKey: "FolderAccessVersion") != version + ":" + project.path
+    }
 
     func launch() {
         guard !launched else { return }
         launched = true
-        run(action: nil)
         checkIfDue()
+        if needsFolderAccess {
+            message = "请选择原配置文件夹，确认此版本的访问权限"
+            chooseProject(startAfter: true)
+        } else { run(action: nil) }
     }
 
     func refresh() {
         checkIfDue()
-        guard !busy && !checking else { return }
+        guard !busy && !checking && !needsFolderAccess else { return }
         checking = true
         let directory = project
         Task {
@@ -75,6 +82,7 @@ struct UpdateStatus: Decodable {
 
     func run(action: String?) {
         guard !busy else { return }
+        if needsFolderAccess { chooseProject(startAfter: true); return }
         busy = true; error = nil
         message = action == "--stop" ? "正在停止服务…" : "正在启动服务…"
         let directory = project
@@ -91,10 +99,10 @@ struct UpdateStatus: Decodable {
         }
     }
 
-    func chooseProject() {
+    func chooseProject(startAfter: Bool = false) {
         let panel = NSOpenPanel()
         panel.title = "选择 AIRemote 项目文件夹"
-        panel.message = "选择包含 .local/mac-runtime.json 的 AIRemote 文件夹。"
+        panel.message = "选择包含 .local/mac-runtime.json 的原配置文件夹。应用更新后，macOS 需要重新确认此目录的访问权限。"
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
         panel.directoryURL = project
         guard panel.runModal() == .OK, let chosen = panel.url else { return }
@@ -102,7 +110,9 @@ struct UpdateStatus: Decodable {
             error = "这个文件夹中没有 AIRemote 启动配置。"; return
         }
         UserDefaults.standard.set(chosen.path, forKey: "ProjectDirectory")
-        error = nil; refresh()
+        UserDefaults.standard.set(version + ":" + chosen.path, forKey: "FolderAccessVersion")
+        error = nil
+        if startAfter { run(action: nil) } else { refresh() }
     }
 
     func openWeb() {
@@ -157,15 +167,15 @@ struct UpdateStatus: Decodable {
     }
 
     nonisolated private static func updateCommand(runtime: URL, arguments: [String]) async -> (Int32, String) {
-        await process([runtime.appendingPathComponent("deploy/update_mac.py").path] + arguments)
+        await process([runtime.appendingPathComponent("deploy/update_mac.py").path] + arguments, timeout: 300)
     }
 
     nonisolated private static func execute(directory: URL, runtime: URL, action: String?) async -> (Int32, String) {
         await process([runtime.appendingPathComponent("deploy/start_mac.py").path, "--config", directory.appendingPathComponent(".local/mac-runtime.json").path,
-            "--runtime-root", runtime.path] + (action.map { [$0] } ?? []))
+            "--runtime-root", runtime.path] + (action.map { [$0] } ?? []), timeout: action == "--status" ? 15 : 75)
     }
 
-    nonisolated private static func process(_ arguments: [String]) async -> (Int32, String) {
+    nonisolated private static func process(_ arguments: [String], timeout: TimeInterval) async -> (Int32, String) {
         await Task.detached(priority: .utility) {
             let process = Process()
             let pipe = Pipe()
@@ -175,8 +185,14 @@ struct UpdateStatus: Decodable {
             process.standardOutput = pipe; process.standardError = pipe
             do {
                 try process.run()
+                let expiration = DispatchWorkItem { if process.isRunning { process.terminate() } }
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: expiration)
+                defer { expiration.cancel() }
                 let output = pipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
+                if process.terminationStatus == 15 || process.terminationStatus == -15 {
+                    return (-1, "操作超时。请用右下角按钮重新选择原配置文件夹，确认目录访问权限后重试。")
+                }
                 return (process.terminationStatus, String(data: output, encoding: .utf8) ?? "无法读取启动结果")
             } catch {
                 return (-1, "无法执行操作：\(error.localizedDescription)\n请检查 Python 和配置文件夹。")

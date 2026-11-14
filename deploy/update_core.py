@@ -5,7 +5,9 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import tarfile
-from urllib.error import HTTPError
+import time
+from http.client import IncompleteRead
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, HTTPRedirectHandler, build_opener
 import zipfile
@@ -36,6 +38,17 @@ class GitHubRedirects(HTTPRedirectHandler):
 
 
 def download(url, target=None, limit=MAX_DOWNLOAD):
+    # Transient CDN failures must never switch the installed release. Retry a
+    # fresh bounded transfer; integrity checks still happen after completion.
+    for attempt in range(3):
+        try: return _download_once(url, target, limit)
+        except (URLError, TimeoutError, ConnectionError, IncompleteRead) as error:
+            if isinstance(error, HTTPError) and error.code not in {429, 500, 502, 503, 504}: raise
+            if attempt == 2: raise
+            time.sleep(.5 * (2 ** attempt))
+
+
+def _download_once(url, target=None, limit=MAX_DOWNLOAD):
     github_url(url)
     request = Request(url, headers={'User-Agent': 'AIRemote-Updater', 'Accept': 'application/vnd.github+json'})
     opener = build_opener(GitHubRedirects())

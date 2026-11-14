@@ -70,6 +70,8 @@ python3 deploy/configure_mac.py \
 
 Mac 安装包同时支持 Apple Silicon / Intel、macOS 13+，携带连接器代码，升级无需重新下载源码。默认每六小时检查 GitHub 稳定版，也可点“检查更新”；发现新版后点“更新并重启”。更新会保留配置、校验下载和代码签名，并在连接器启动失败时回退。安装包当前使用 ad-hoc 签名，尚未 Apple 公证；后续可在发布工作流中接入自己的 Developer ID。
 
+使用自定义配置目录时，新版本首次打开会让你选择一次原配置文件夹。选择原目录后继续启动；取消可稍后重选，界面不会无限等待目录授权。GitHub 下载遇到临时网络故障会有界限地重试，校验失败始终停止更新。
+
 DeepSeek 使用 `deploy/install_deepseek.py` 注册本机 companion，仅将当前桌面 Host 的正常认证入口写入私有文件，不上传登录 token/cookie。
 
 ## Android
@@ -107,8 +109,8 @@ npm --prefix web run build
 ```sh
 python3 macos/build_app.py --zip dist/AIRemote-macos.zip
 python3 tools/package_server.py
-git tag v0.6.0
-git push origin v0.6.0
+git tag "v$(cat VERSION)"
+git push origin "v$(cat VERSION)"
 ```
 
 下载文件和 `SHA256SUMS` 后，Linux 可用 `sha256sum -c SHA256SUMS`，Mac 可用 `shasum -a 256 -c SHA256SUMS`。Mac / 服务端的信任基础是维护者的 GitHub Releases 和 HTTPS；Android 还会要求更新包与原安装包签名一致。自动检查默认开启，Android 安装仍需用户在系统界面确认。

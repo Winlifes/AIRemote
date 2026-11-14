@@ -7,6 +7,7 @@ import tarfile
 import unittest
 from unittest.mock import patch
 import zipfile
+from urllib.error import URLError
 
 import update_core
 from update_core import extract_zip, github_url, release_asset, version_tuple
@@ -15,6 +16,12 @@ from update_server import switch_release
 
 
 class UpdateSafetyTests(unittest.TestCase):
+    def test_transient_download_retries_but_metadata_errors_do_not(self):
+        with patch.object(update_core, '_download_once', side_effect=[URLError('temporary CDN failure'), b'correct']), patch.object(update_core.time, 'sleep'):
+            self.assertEqual(update_core.download('https://github.com/example'), b'correct')
+        with patch.object(update_core, '_download_once', side_effect=ValueError('unsafe URL')) as download:
+            with self.assertRaises(ValueError): update_core.download('https://evil.example')
+            self.assertEqual(download.call_count, 1)
     def test_only_stable_versions_and_trusted_https_hosts_are_accepted(self):
         self.assertGreater(version_tuple('v0.10.0'), version_tuple('0.9.9'))
         for value in ['v0.6.0-beta', '../0.6.0', 'latest', '1.2']:
