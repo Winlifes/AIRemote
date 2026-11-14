@@ -10,7 +10,23 @@ export type Thread = {
   threadId: string; title: string; cwd: string; runtimeStatus: string | { type: string; activeFlags?: string[] } | null;
   latestPersistedTurnStatus: string | null; runtimeSource?: string; projectId?: string;
   turns: { turn_id: string; status: string; started_at?: number | null; completed_at?: number | null }[];
+  modelSettings?: ModelSettings | null;
 };
+export type ModelSettings = { model?: string | null; reasoningEffort?: string | null; collaborationMode?: string | null; permissionMode?: string | null; permissionProfile?: string | null; approvalPolicy?: string | null; source: string };
+
+export function modelPresentation(settings?: ModelSettings | null) {
+  const model = settings?.model;
+  const names: Record<string, string> = { 'gpt-6.1-sol': 'GPT-6.1 Sol', 'gpt-6-astra': 'GPT-6 Astra', 'gpt-6.1-terra': 'GPT-6.1 Terra', 'gpt-6-sol': 'GPT-6 Sol', 'gpt-6-luna': 'GPT-6 Luna' };
+  const efforts: Record<string, string> = { minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '最高', max: 'Max', ultra: 'Ultra' };
+  const modes: Record<string, string> = { default: '工作', plan: '计划' };
+  const permissions: Record<string, string> = { dangerFullAccess: '完全访问', workspaceWrite: '工作区写入', readOnly: '只读' };
+  return {
+    model: model ? names[model] || model : '模型设置待同步',
+    effort: settings?.reasoningEffort ? efforts[settings.reasoningEffort] || settings.reasoningEffort : null,
+    mode: settings?.collaborationMode ? modes[settings.collaborationMode] || settings.collaborationMode : null,
+    permission: settings?.permissionMode ? permissions[settings.permissionMode] || '自定义权限' : null,
+  };
+}
 export type Message = { itemId: string; turnId: string; threadId?: string; role: string; phase?: string; text: string; createdAtMs: number; ordinal: number };
 export type MessagePage = { messages: Message[]; hasMore: boolean; olderCursor: string | null; turns: Thread['turns'] };
 export type Artifact = { id: string; name: string; path: string; size: number; threadId: string };

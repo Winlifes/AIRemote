@@ -13,6 +13,7 @@ import android.webkit.*;
 import android.widget.*;
 import androidx.core.content.FileProvider;
 import androidx.core.view.*;
+import androidx.core.graphics.Insets;
 import java.io.File;
 import java.net.URI;
 import java.util.Arrays;
@@ -30,14 +31,19 @@ public class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         preferences = getSharedPreferences("airemote", MODE_PRIVATE);
         server = preferences.getString("server", "");
         root = new FrameLayout(this); root.setBackgroundColor(Color.rgb(250, 250, 250));
         setContentView(root);
         ViewCompat.setOnApplyWindowInsetsListener(root, (view, insets) -> {
-            var bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
+            int handled = WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout();
+            Insets bars = insets.getInsets(handled);
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-            return insets;
+            // The container owns these safe areas. Forward zeroes so WebView's
+            // CSS env(safe-area-inset-*) cannot add the same padding again.
+            // Keep IME notifications intact for visualViewport keyboard resizing.
+            return new WindowInsetsCompat.Builder(insets).setInsets(handled, Insets.NONE).build();
         });
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
         if (server.isEmpty()) showSetup(); else loadServer();

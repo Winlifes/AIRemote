@@ -11,6 +11,7 @@
 - 原生队列添加、编辑、删除、排序、清空和立即执行，以及新建真实对话。
 - DeepSeek Harness 现有 Host 的项目、聊天、续聊、文件、新建和队列；其当前版本没有排序接口。
 - 手机抽屉侧栏、胶囊输入框、Markdown、用户消息右对齐和真实处理时间。
+- 侧栏与全屏遮罩同时过渡；当前 Codex 模型、思考强度、工作/计划模式及权限从原桌面 owner 实时读取。
 - Mac 应用启动/停止连接器；Android 支持系统文件下载和 GitHub Releases 更新。
 
 CodeBuddy / Claude、多台 Mac、图片和音频指令、手机处理 AI 审批仍待扩展。
@@ -79,6 +80,8 @@ DeepSeek 使用 `deploy/install_deepseek.py` 注册本机 companion，仅将当�
 下载 Releases 中的 `AIRemote-android.apk`，支持 Android 8+。首次填写自己的 HTTPS 服务器地址，再登录该服务器账号。APK 不内置服务器密码或 agent 凭据。
 
 应用使用同一服务端网页。文件交给系统下载管理器；更新通过 GitHub Releases 检查，并校验 SHA-256、包名、版本和现有安装签名，安装步骤由系统处理。
+
+系统栏与刘海安全区由原生容器处理一次，向 WebView 传递归零后的对应 insets；输入法信息继续正常传递，避免顶部重复留白与键盘关闭后的残留空白。实现依据 [Android WebView window insets](https://developer.android.com/develop/ui/views/layout/webapps/understand-window-insets)。
 
 本地构建需要 JDK 17、Android SDK 35：
 

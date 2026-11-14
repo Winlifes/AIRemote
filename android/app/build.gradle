@@ -29,8 +29,10 @@ android {
     }
     buildTypes { release { signingConfig signingConfigs.release; minifyEnabled false } }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    testOptions { unitTests.includeAndroidResources = true }
 }
 dependencies {
     implementation 'androidx.core:core:1.15.0'
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.18'
 }

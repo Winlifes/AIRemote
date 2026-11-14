@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Activity, ArrowDown, ArrowLeft, ArrowUp, ArrowUpRight, Check, CheckCheck, ChevronDown, ChevronRight, Clock3, Code2, Copy, CornerDownRight, CornerUpRight, Download, File, FileText, Folder, Inbox, ListOrdered, LoaderCircle, LogOut, Menu, MessageSquare, Monitor, MoreHorizontal, Pencil, Plus, Radio, RefreshCw, Search, Send, ShieldCheck, Sparkles, Terminal, Trash2, WifiOff, X } from 'lucide-react';
-import { api, APIError, Artifact, bridge as remoteBridge, bridgeResponse as remoteBridgeResponse, Device, login, logout, Message, MessagePage, Project, Provider, ProviderId, providerPath, QueueItem, queueText, Receipt, runtime, session, Thread } from './api';
+import { api, APIError, Artifact, bridge as remoteBridge, bridgeResponse as remoteBridgeResponse, Device, login, logout, Message, MessagePage, Project, Provider, ProviderId, providerPath, QueueItem, queueText, Receipt, runtime, session, Thread, modelPresentation } from './api';
 import { ConversationReader, mergeLatestPage, mergeTurns, visibleMessages as filterVisibleMessages } from './sync';
 import './styles.css';
 import './conversation.css';
@@ -467,7 +467,7 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
   if (!authenticated) return <Login onLogin={d => { setAuthenticated(true); setDevice(d); }} />;
 
   return <div className={`app ${selected ? 'has-selection' : ''} ${drawerOpen ? 'drawer-open' : ''}`}>
-    {mobile && drawerOpen && <button className="drawer-backdrop" aria-label="关闭对话侧栏遮罩" tabIndex={-1} onClick={closeDrawer} />}
+    {mobile && <button className="drawer-backdrop" aria-label="关闭对话侧栏遮罩" aria-hidden={!drawerOpen} tabIndex={-1} onClick={closeDrawer} />}
     <aside ref={drawerRef} id="conversation-sidebar" className="sidebar" role={mobile ? 'dialog' : undefined} aria-label={mobile ? '项目与对话侧栏' : undefined} aria-modal={mobile && drawerOpen ? true : undefined} aria-hidden={mobile && !drawerOpen ? true : undefined} inert={mobile && !drawerOpen ? true : undefined} tabIndex={-1}>
       <div className="sidebar-top"><Logo /><span className="version-tag">BETA</span><button className="icon-button drawer-close" aria-label="关闭对话侧栏" onClick={closeDrawer}><X size={21} /></button></div>
       <section className="provider-strip" aria-label="AI 客户端连接"><div className="provider-switcher" role="group" aria-label="切换 AI 客户端">{(['codex', 'deepseek'] as ProviderId[]).map(id => {
@@ -556,6 +556,7 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
         <div className="composer-wrap">
           {receipt && <ReceiptView receipt={receipt} close={() => setReceipt(null)} />}
           <QueueDock reorder={!!provider?.features.includes('queue-reorder')} items={queue} active={stat.tone === 'green'} enabled={!!canWrite} onSend={item => queueAction(item, 'send')} onDelete={item => queueAction(item, 'delete')} onEdit={item => { setEditing(item); setEditText(queueText(item)); }} onMove={(item, direction) => queueAction(item, direction)} onClear={() => setClearing(true)} />
+          {providerId === 'codex' && <ModelStatus thread={thread} online={device.connectorOnline && !syncErrors.thread} />}
           <Composer mobile={mobile} value={draft} onChange={value => setDrafts(d => ({ ...d, [selected]: value }))} onSend={send} mode={sendMode} setMode={setSendMode} providerId={providerId} providerName={providerName} busy={!!busy} enabled={!!canWrite} hasQueue={!!queue.length} onFiles={() => setFilesOpen(true)} onNewChat={showNewChat} />
           <div className="composer-caption">{busy || (sendMode === 'queue' ? `原生队列由 ${providerName} 自动执行，空闲时可能立即开始` : stat.tone === 'green' ? '运行中发送会追加到当前对话 · ⌘ / Ctrl + Enter 发送' : '在同一对话继续下一轮 · ⌘ / Ctrl + Enter 发送')}</div>
         </div>
@@ -575,6 +576,15 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
     }} />}
     {editing && <Modal title="编辑队列指令" close={() => setEditing(null)}><form onSubmit={async e => { e.preventDefault(); const result = await mutate(`${threadPath(selected)}/queue/${editing.id}`, 'PATCH', { text: editText }, '正在保存队列…'); if (result) { setEditing(null); setToast('指令已更新'); await loadDetail(selected, true); } }}><label>指令内容<textarea autoFocus value={editText} onChange={e => setEditText(e.target.value)} rows={7} required /></label><div className="modal-actions"><button type="button" className="secondary" onClick={() => setEditing(null)}>取消</button><button className="primary" disabled={!!busy || !editText.trim()}>保存修改</button></div></form></Modal>}
     {clearing && <Modal title="清空当前对话的队列？" close={() => setClearing(false)}><p className="modal-description">将删除当前看到的 {queue.length} 条待执行指令。已发送的消息和正在执行的任务不受影响。</p><div className="modal-actions"><button className="secondary" onClick={() => setClearing(false)}>保留队列</button><button className="primary danger-bg" disabled={!!busy} onClick={async () => { const result = await mutate(`${threadPath(selected)}/queue`, 'DELETE', { ids: queue.map(q => q.id) }, '正在清空队列…'); if (result) { setClearing(false); await loadDetail(selected, true); } }}>确认清空</button></div></Modal>}
+  </div>;
+}
+
+function ModelStatus({ thread, online }: { thread?: Thread; online: boolean }) {
+  const settings = online ? thread?.modelSettings : null;
+  const labels = modelPresentation(settings);
+  return <div className="model-status" role="status" aria-label="当前模型与工作模式">
+    <span className="model-name" title={settings?.model || ''}>{online ? labels.model : '模型设置待同步'}{labels.effort && <span className="model-effort">{labels.effort}</span>}</span>
+    <span className="model-modes">{labels.mode && <span>{labels.mode}</span>}{labels.permission && <span className={labels.permission === '完全访问' ? 'full-access' : ''}><ShieldCheck size={12} />{labels.permission}</span>}</span>
   </div>;
 }
 

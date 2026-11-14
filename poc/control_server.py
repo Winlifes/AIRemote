@@ -34,6 +34,28 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def desktop_model_settings(state):
+    """Return display metadata only, from the same live owner snapshot as status."""
+    collaboration = state.get('latestCollaborationMode') or {}
+    collaboration = collaboration if isinstance(collaboration, dict) else {}
+    settings = collaboration.get('settings') or {}
+    settings = settings if isinstance(settings, dict) else {}
+    permissions = state.get('currentPermissions') or {}
+    permissions = permissions if isinstance(permissions, dict) else {}
+    sandbox = permissions.get('sandboxPolicy') or {}
+    profile = permissions.get('activePermissionProfile') or {}
+    def text(value): return value[:160] if isinstance(value, str) and value else None
+    return {
+        'model': text(settings.get('model')) or text(state.get('latestModel')),
+        'reasoningEffort': text(settings.get('reasoning_effort')) or text(state.get('latestReasoningEffort')),
+        'collaborationMode': text(collaboration.get('mode')),
+        'permissionMode': text(sandbox.get('type')) if isinstance(sandbox, dict) else None,
+        'permissionProfile': text(profile.get('id')) if isinstance(profile, dict) else None,
+        'approvalPolicy': text(permissions.get('approvalPolicy')),
+        'source': 'original-desktop-owner',
+    }
+
+
 class Conflict(RuntimeError):
     pass
 
@@ -151,6 +173,7 @@ class Controller:
     def session(self, thread_id):
         history = self.history(thread_id)
         result = history.snapshot()
+        result['modelSettings'] = None
         if self.discover_desktop_projects:
             result['projectId'] = self.catalog.project_for_thread(thread_id)
         try:
@@ -162,7 +185,8 @@ class Controller:
             result.update({"runtimeStatus": snapshot["conversationState"].get("threadRuntimeStatus"),
                            "runtimeSource": "original desktop IPC owner",
                            "runtimeStatusNote": "Observed directly from the existing desktop owner.",
-                           "ownerClientId": snapshot["ownerClientId"]})
+                           "ownerClientId": snapshot["ownerClientId"],
+                           "modelSettings": desktop_model_settings(snapshot["conversationState"])})
         except (DesktopError, ConnectionError, TimeoutError, OSError, RuntimeError, ValueError) as error:
             result['runtimeStatusNote'] = 'Live desktop status unavailable: ' + type(error).__name__
             if thread_id in self.rpc.created_threads or thread_id in self.recoverable_created:

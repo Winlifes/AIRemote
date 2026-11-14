@@ -9,13 +9,20 @@
 .composer-actions>button>svg:last-child:not(:first-child){margin-left:auto}
 .composer-menu-separator{height:1px;background:#efeff1;margin:4px 8px}
 .composer textarea:focus{border:0!important;box-shadow:none!important}
+.model-status{max-width:990px;margin:0 auto 7px;display:flex;align-items:center;justify-content:space-between;gap:10px;color:#77777e;font-size:11px;line-height:20px;min-height:20px;padding:0 5px}
+.model-name{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.model-effort{margin-left:7px;color:#55555e}
+.model-modes{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.model-modes>span{display:inline-flex;gap:4px;align-items:center}
+.model-modes .full-access{color:#bd793c}
 @media(max-width:700px){
  .app{height:var(--airemote-viewport-height,100dvh);min-height:0;overflow:hidden;background:#fafafa}
  .app>.workspace,.app.has-selection>.workspace{display:flex;width:100%;min-height:0;background:#fafafa}
- .app>.sidebar,.app.has-selection>.sidebar{display:flex;position:fixed;z-index:92;top:0;left:0;bottom:auto;width:min(80vw,360px);height:var(--airemote-viewport-height,100dvh);padding:calc(18px + env(safe-area-inset-top)) 16px 0;background:#fff;border:0;box-shadow:12px 0 40px #0000000c;transform:translateX(-100%);visibility:hidden;pointer-events:none;transition:transform .22s ease,visibility 0s .22s}
- .app.drawer-open>.sidebar{transform:translateX(0);visibility:visible;pointer-events:auto;transition:transform .22s ease}
+ .app>.sidebar,.app.has-selection>.sidebar{display:flex;position:fixed;z-index:92;top:0;left:0;bottom:auto;width:min(80vw,360px);height:var(--airemote-viewport-height,100dvh);padding:calc(18px + env(safe-area-inset-top)) 16px 0;background:#fff;border:0;box-shadow:12px 0 40px #0000000c;transform:translateX(-100%);visibility:hidden;pointer-events:none;transition:transform .28s cubic-bezier(.22,.61,.36,1),visibility 0s .28s}
+ .app.drawer-open>.sidebar{transform:translateX(0);visibility:visible;pointer-events:auto;transition:transform .28s cubic-bezier(.22,.61,.36,1)}
  .sidebar:focus{outline:none}
- .drawer-backdrop{display:block;position:fixed;inset:0 0 0 min(80vw,360px);z-index:90;width:calc(100% - min(80vw,360px));height:100%;padding:0;background:#0008;cursor:default;border-radius:0}
+ .drawer-backdrop{display:block;position:fixed;inset:0;z-index:90;width:100%;height:100%;padding:0;background:#0008;cursor:default;border-radius:0;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .28s ease,visibility 0s .28s}
+ .app.drawer-open>.drawer-backdrop{opacity:1;visibility:visible;pointer-events:auto;transition:opacity .28s ease}
  .sidebar-top{min-height:42px;padding:0 0 0 3px;gap:5px}
  .sidebar-top .brand{font-size:21px;gap:8px;letter-spacing:-.65px}
  .sidebar-top .brand img{width:30px;height:30px;border-radius:9px}
@@ -78,4 +85,4 @@
  .welcome p{font-size:13px;color:#88888d;line-height:1.9;margin:18px 0 25px}
  .welcome>.primary{background:#111;border-radius:28px;box-shadow:none;min-height:48px}
 }
-@media(prefers-reduced-motion:reduce){.app>.sidebar,.app.drawer-open>.sidebar{transition:none}}
+@media(prefers-reduced-motion:reduce){.app>.sidebar,.app.drawer-open>.sidebar,.drawer-backdrop,.app.drawer-open>.drawer-backdrop{transition:none}}

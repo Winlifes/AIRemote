@@ -11,7 +11,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from app_server_rpc import AppServerRPC
-from control_server import Conflict, Controller, ControlServer, Journal
+from control_server import Conflict, Controller, ControlServer, Journal, desktop_model_settings
 from desktop_ipc import DesktopError, DesktopIPC, MAX_FRAME_BYTES
 
 
@@ -112,6 +112,30 @@ class WriteSafetyTests(unittest.TestCase):
         self.controller.catalog.projects = forbidden
         _, result = self.request('GET', '/api/health')
         self.assertTrue(result['ok'])
+
+    def test_session_includes_live_model_and_mode_without_private_context(self):
+        class Reader:
+            def __enter__(self): return self
+            def __exit__(self, *_): pass
+            def state(self, _):
+                return {'ownerClientId': 'original-owner', 'conversationState': {
+                    'threadRuntimeStatus': {'type': 'active'}, 'latestModel': 'old-model', 'latestReasoningEffort': None,
+                    'latestCollaborationMode': {'mode': 'plan', 'settings': {'model': 'current-model', 'reasoning_effort': 'max', 'developer_instructions': 'PRIVATE INSTRUCTIONS'}},
+                    'currentPermissions': {'sandboxPolicy': {'type': 'workspaceWrite'}, 'runtimeWorkspaceRoots': ['/private/root'], 'approvalPolicy': 'on-request'}}}
+        self.controller.desktop_reader = Reader
+        _, result = self.request('GET', '/api/threads/' + THREAD)
+        self.assertEqual(result['modelSettings']['model'], 'current-model')
+        self.assertEqual(result['modelSettings']['reasoningEffort'], 'max')
+        self.assertEqual(result['modelSettings']['collaborationMode'], 'plan')
+        self.assertEqual(result['modelSettings']['permissionMode'], 'workspaceWrite')
+        self.assertNotIn('PRIVATE INSTRUCTIONS', json.dumps(result))
+        self.assertNotIn('/private/root', json.dumps(result))
+
+    def test_missing_live_settings_never_invents_model_or_access(self):
+        result = desktop_model_settings({})
+        self.assertIsNone(result['model'])
+        self.assertIsNone(result['reasoningEffort'])
+        self.assertIsNone(result['permissionMode'])
 
     def test_all_mutations_require_authentication(self):
         for method in ["POST", "PATCH", "DELETE", "PUT"]:
