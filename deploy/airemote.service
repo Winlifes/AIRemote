@@ -1,0 +1,28 @@
+[Unit]
+Description=AIRemote private web and Mac relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=airemote
+Group=airemote
+WorkingDirectory=/opt/airemote/current
+ExecStart=/usr/bin/python3 /opt/airemote/current/relay/server.py --config /etc/airemote/relay.json --state /var/lib/airemote --static /opt/airemote/current/web/dist --port 8787
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/airemote
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=384M
+TasksMax=96
+
+[Install]
+WantedBy=multi-user.target

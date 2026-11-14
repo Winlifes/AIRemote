@@ -1,0 +1,22 @@
+.provider-strip{margin:16px 4px 18px;padding:0}
+.provider-switcher{display:flex;gap:8px}
+.provider-option{flex:0 0 42px;width:42px;height:42px;min-height:42px;display:flex;align-items:center;justify-content:center;padding:5px;border:1px solid transparent;border-radius:11px;background:transparent;transition:background .15s,border-color .15s}
+.provider-option:hover{background:#eff0f7}
+.provider-option.selected{border-color:#d5d2fc;background:#f0efff;color:#48416d;box-shadow:0 1px 5px #7770dd06}
+.provider-option:focus-visible{outline:2px solid #7770e7;outline-offset:2px}
+.provider-logo{position:relative;display:block;flex-shrink:0;width:29px;height:29px}
+.provider-logo>img{display:block;width:100%;height:100%;object-fit:contain;border-radius:7px}
+.provider-dot{position:absolute;width:9px;height:9px;border-radius:50%;bottom:-1px;right:-2px;border:2px solid #fdfdff}
+.provider-dot.connected{background:#27ac8b}.provider-dot.disconnected{background:#b9bdca}
+.sidebar-title-actions{display:flex;align-items:center;gap:9px}
+.search-toggle{width:35px;min-width:35px;height:36px;color:#9c9db1;border-radius:10px}
+.search-toggle.chosen,.search-toggle:hover{background:#eaeaf8;color:#7069c8}
+.provider-search{margin-bottom:7px}.provider-search>.icon-button{width:24px;min-width:24px;min-height:28px;height:28px}
+.inline-provider-icon{width:15px;height:15px;object-fit:contain;border-radius:4px;flex-shrink:0}
+.provider-info{display:flex;align-items:center;gap:15px;margin:18px 0 22px}.provider-info>img{width:50px;height:50px;border-radius:12px;object-fit:contain}.provider-info strong{font-size:16px;display:block}.provider-info span{font-size:12px;color:#999bae;display:block;margin-top:6px}
+.provider-capabilities{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 25px}.provider-capabilities>span{font-size:11px;background:#f3f3fa;border:1px solid #ededf5;color:#8e8ca8;padding:6px 9px;border-radius:7px}
+@media(max-width:700px){
+ .provider-strip{margin:16px 4px 18px}.provider-switcher{gap:8px}.provider-option{flex-basis:44px;width:44px;height:44px;min-height:44px;padding:5px;border-radius:12px}.provider-logo{width:30px;height:30px}.provider-logo>img{border-radius:8px}.provider-dot{width:10px;height:10px}
+ .search-toggle{width:42px;height:43px;min-width:42px;min-height:43px}.sidebar-title-actions{gap:8px}.sidebar-title{margin-bottom:9px}
+ .provider-search{margin-top:7px;margin-bottom:4px}.provider-search input{transform:none;width:100%;margin:0;font-size:16px}.provider-search>.icon-button{min-width:30px;width:30px;min-height:35px;height:35px}.provider-info strong{font-size:16px}
+}

@@ -1,0 +1,113 @@
+# AIRemote
+
+从手机继续 Mac 上的 AI 对话。支持网页、Android APK 和 Mac 连接器应用，可部署到自己的服务器。
+
+[下载最新版本](https://github.com/Winlifes/AIRemote/releases/latest) · [MIT License](LICENSE) · [安全说明](SECURITY.md)
+
+## 功能
+
+- 读取 Mac Codex 原有对话、真实运行状态、回复和关联文件；向同一个桌面对话发送指令。
+- 原生项目层级，展开项目才读取列表；打开聊天才读取最新消息，上翻才读取更早历史。
+- 原生队列添加、编辑、删除、排序、清空和立即执行，以及新建真实对话。
+- DeepSeek Harness 现有 Host 的项目、聊天、续聊、文件、新建和队列；其当前版本没有排序接口。
+- 手机抽屉侧栏、胶囊输入框、Markdown、用户消息右对齐和真实处理时间。
+- Mac 应用启动/停止连接器；Android 支持系统文件下载和 GitHub Releases 更新。
+
+CodeBuddy / Claude、多台 Mac、图片和音频指令、手机处理 AI 审批仍待扩展。
+
+## 架构
+
+```text
+Android / 手机浏览器 --HTTPS--> 自托管 relay <--HTTPS 主动轮询-- Mac agent
+                                                                  |
+                                                          loopback connector
+                                                                  |
+                                             原 Codex owner / DeepSeek Host
+```
+
+Mac 不需要公网 IP 或入站端口。已有聊天交给原桌面 owner 执行，不另开 SDK 聊天冒充接管。
+
+## 部署中继
+
+需要 Linux、Python 3.9+、Caddy 和已指向服务器的域名。示例域名需要替换。
+
+```sh
+git clone https://github.com/Winlifes/AIRemote.git
+cd AIRemote
+cd web && npm ci && npm run build && cd ..
+python3 deploy/setup_relay.py --origin https://remote.example.com --config /your/private/relay.json
+```
+
+初始化只打印文件路径。`phone-login.txt` 保存手机登录信息，`mac-agent-credentials.json` 保存 Mac 独立凭据；均为 0600，不要上传仓库。
+
+将 `relay/`、`deploy/`、`web/dist/`、`VERSION` 放到服务器 `/opt/airemote/releases/<version>/`，以 root 执行：
+
+```sh
+python3 /opt/airemote/releases/<version>/deploy/install.py \
+  --release /opt/airemote/releases/<version> \
+  --config /your/private/relay.json --domain remote.example.com
+```
+
+安装器创建独立用户与 systemd 服务，服务仅监听 loopback。Caddy 负责 HTTPS，保留已有其他站点。
+
+## 配置 Mac
+
+Mac 须保持联网，对应 AI 客户端保持运行和登录。准备 Python 3.9+；Apple 的 Python 可能需要先安装 Command Line Tools。
+
+将上一步的私有 `mac-agent-credentials.json` 安全复制到 Mac，然后：
+
+```sh
+python3 deploy/configure_mac.py \
+  --credentials /your/private/mac-agent-credentials.json \
+  --workspace /your/project
+```
+
+默认配置位于 `~/Library/Application Support/AIRemote/.local/`。可重复 `--workspace` 授权多个目录，`--home` 指定配置位置。默认接入原生项目目录；文件下载仍限制在授权目录内，并且必须有 AI 回复中的明确关联。
+
+从 Releases 下载 Mac 应用，放入“应用程序”后打开；自定义配置位置可在应用中选择。源码启动可使用 `deploy/start_mac.py --config <mac-runtime.json>`。`--status` 只读，`--stop` 停止，`--restart` 重启；日志在配置旁的 `logs/`。关闭应用窗口后后台服务继续运行。
+
+DeepSeek 使用 `deploy/install_deepseek.py` 注册本机 companion，仅将当前桌面 Host 的正常认证入口写入私有文件，不上传登录 token/cookie。
+
+## Android
+
+下载 Releases 中的 `AIRemote-android.apk`，支持 Android 8+。首次填写自己的 HTTPS 服务器地址，再登录该服务器账号。APK 不内置服务器密码或 agent 凭据。
+
+应用使用同一服务端网页。文件交给系统下载管理器；更新通过 GitHub Releases 检查，并校验 SHA-256、包名、版本和现有安装签名，安装步骤由系统处理。
+
+本地构建需要 JDK 17、Android SDK 35：
+
+```sh
+cd android
+./gradlew testDebugUnitTest assembleDebug
+```
+
+正式包使用长期签名密钥，通过 `AIREMOTE_KEYSTORE`、`AIREMOTE_KEYSTORE_PASSWORD`、`AIREMOTE_KEY_ALIAS`、`AIREMOTE_KEY_PASSWORD` 提供。不要丢失签名密钥，否则原应用无法直接升级。
+
+## 开发与发布
+
+```sh
+python3 -m unittest discover -s poc -p 'test_*.py'
+python3 -m unittest discover -s relay -p 'test_*.py'
+python3 -m unittest discover -s deploy -p 'test_*.py'
+npm --prefix web ci
+npm --prefix web test
+npm --prefix web run build
+```
+
+真实写入验证脚本必须显式提供授权聊天 ID；单元测试使用隔离合成数据。不要将聊天数据库、截图、日志或测试产物加入 Git。
+
+版本号在 `VERSION`。GitHub Actions 执行回归与构建。签名私钥仅放在维护者私有目录和 Actions Secrets。
+
+## 范围与限制
+
+已验证 Codex 桌面 `26.1103.60933`、`26.1106.51428`、`26.1111.21308`，DeepSeek Harness `0.2.2-rc.1`。内部 IPC/Host API 不是稳定公开协议；未验证版本可能只读，写入会停止，而不是启动另一运行实例。
+
+消息按需轮询，不承诺零延迟逐字流式。Mac 休眠或断网会显示离线，不会误判为任务完成。中继不是端到端加密，请保护自己的服务器和配置备份。
+
+## 许可与参考
+
+原创代码采用 [MIT](LICENSE)。依赖与品牌标识见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+- [GitHub Releases API](https://docs.github.com/en/rest/releases/releases)
+- [Android PackageManager](https://developer.android.com/reference/android/content/pm/PackageManager)
+- [Android FileProvider](https://developer.android.com/reference/androidx/core/content/FileProvider)
