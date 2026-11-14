@@ -3,9 +3,10 @@ import { createRoot } from 'react-dom/client';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Activity, ArrowDown, ArrowLeft, ArrowUp, ArrowUpRight, Check, CheckCheck, ChevronDown, ChevronRight, Clock3, Code2, Copy, CornerDownRight, CornerUpRight, Download, File, FileText, Folder, Inbox, ListOrdered, LoaderCircle, LogOut, Menu, MessageSquare, Monitor, MoreHorizontal, Pencil, Plus, Radio, RefreshCw, Search, Send, ShieldCheck, Sparkles, Terminal, Trash2, WifiOff, X } from 'lucide-react';
+import { Activity, ArrowDown, ArrowLeft, ArrowUp, ArrowUpRight, Check, CheckCheck, ChevronDown, ChevronRight, Clock3, Code2, Copy, CornerDownRight, CornerUpRight, Download, File, FileText, Folder, Inbox, ListOrdered, LoaderCircle, LogOut, Menu, MessageSquare, Monitor, MoreHorizontal, Pencil, Plus, Radio, RefreshCw, Search, Send, ShieldCheck, Sparkles, Target, Terminal, Trash2, WifiOff, X } from 'lucide-react';
 import { api, APIError, Artifact, bridge as remoteBridge, bridgeResponse as remoteBridgeResponse, Device, login, logout, Message, MessagePage, Project, Provider, ProviderId, providerPath, QueueItem, queueText, Receipt, runtime, session, Thread, modelPresentation } from './api';
 import { ConversationReader, mergeLatestPage, mergeTurns, visibleMessages as filterVisibleMessages } from './sync';
+import { GoalControl } from './goals';
 import './styles.css';
 import './conversation.css';
 import './projects.css';
@@ -90,6 +91,7 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
   const [selected, setSelected] = useState(selectedChat);
   const [search, setSearch] = useState('');
   const [filesOpen, setFilesOpen] = useState(false);
+  const [goalOpen, setGoalOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [files, setFiles] = useState<Artifact[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
@@ -361,6 +363,7 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
     setMessages([]); setFiles([]); setFilesLoading(false); setQueue([]); setHasOlder(false); setOlderCursor(null); setLoadingOlder(false); setLastUpdated(undefined);
     historyIntentRef.current = 0; touchStartRef.current = null;
     setExpanded(true); setFollowLatest(true); setError('');
+    setGoalOpen(false);
     setReceipt(current => current?.result?.threadId === selected ? current : null);
   }, [selected]);
   useEffect(() => {
@@ -405,7 +408,7 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
     uncertainWrites.current.set(fingerprint, key);
     try {
       const result = await bridge<Receipt>(path, method, body, key);
-      uncertainWrites.current.delete(fingerprint);
+      if (!['in_flight', 'outcome_unknown'].includes(result.requestStatus)) uncertainWrites.current.delete(fingerprint);
       if (['send', 'queue_send', 'queue_add', 'create'].includes(result.kind || '')) setReceipt(result);
       const output = result.result;
       const item = output?.item as QueueItem | undefined;
@@ -417,7 +420,7 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
       if (result.kind === 'queue_send' && output?.removedAfterAcceptance) setQueue(old => old.filter(item => item.id !== output.queueId));
       return result;
     } catch (e) {
-      if (e instanceof APIError && e.status && e.status < 500 && !/不确定|未知|缓存已过期/.test(e.message)) uncertainWrites.current.delete(fingerprint);
+      if (e instanceof APIError && e.status && e.status < 500 && !/不确定|未知|缓存已过期|outcome is unknown|do not blindly retry/i.test(e.message)) uncertainWrites.current.delete(fingerprint);
       notifyError(e); return null;
     }
     finally { setBusy(''); }
@@ -432,6 +435,12 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
       setToast(sendMode === 'queue' ? `已加入 ${providerName} 原生队列` : 'Mac 已受理，正在核对对话回执');
       await loadDetail(selected, true);
     }
+  }
+  async function changeGoal(method: string, body: object) {
+    const id = selected, current = reader.current.scope();
+    const result = await mutate(`${threadPath(id)}/goal`, method, body, '正在更新 Codex 目标…');
+    await loadDetail(id, true);
+    return current() ? result : null;
   }
   async function download(artifact: Artifact) {
     setBusy(`正在获取 ${artifact.name}…`); setError('');
@@ -509,10 +518,12 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
           <button className="icon-button mobile-back drawer-trigger" data-drawer-trigger aria-label="打开项目与对话" aria-controls="conversation-sidebar" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu size={23} /></button>
           <div className="conversation-title"><div className="conversation-breadcrumb"><img className="inline-provider-icon" src={`/providers/${providerId}.png`} alt="" />{providerName}<span>/</span>{thread?.cwd?.split('/').pop() || 'Mac'}</div><h1>{thread?.title || '正在读取对话…'}</h1></div>
           <button className="header-file-button" aria-label="查看对话文件" title="对话文件" onClick={() => setFilesOpen(true)}><Folder size={18} /><span className="header-file-label">文件</span>{!!files.length && <span className="header-file-count">{files.length}</span>}</button>
+          {providerId === 'codex' && <button className="icon-button" aria-label="管理对话目标" title="对话目标" onClick={() => { setError(''); setGoalOpen(true); }}><Target size={19} /></button>}
           <button className="icon-button refresh-detail" aria-label="刷新当前对话" disabled={loading || !device.connectorOnline} onClick={() => loadDetail()}><RefreshCw size={18} className={loading ? 'spin' : ''} /></button>
           {window.AIRemoteAndroid && <button className="icon-button" aria-label="Android 应用设置与更新" onClick={() => window.AIRemoteAndroid?.openSettings()}><MoreHorizontal size={19} /></button>}
         </header>
         <div className="conversation-subheader"><span className={`status-label ${device.connectorOnline && !syncErrors.thread ? stat.tone : 'muted'}`}><i className="dot" />{syncErrors.thread ? '状态待同步' : device.connectorOnline ? stat.label : device.online ? '连接器离线' : 'Mac 离线'}</span><span className="status-hint">{device.connectorOnline ? stat.hint : '恢复连接后继续同步'}</span><span className="updated">{syncErrors.messages ? '消息同步中断' : lastUpdated ? `${shortTime(lastUpdated)} 同步` : '等待同步'}</span></div>
+        {providerId === 'codex' && <GoalControl key={selected} state={thread?.goalState} open={goalOpen} close={() => setGoalOpen(false)} show={() => { setError(''); setGoalOpen(true); }} online={device.connectorOnline && !syncErrors.thread && !loading} busy={!!busy} error={error} change={changeGoal} Modal={Modal} />}
         {!device.connectorOnline && <div className="offline-banner" role="status"><WifiOff size={17} /><span>{device.online ? 'Mac 在线，但本地连接器暂不可用。' : 'Mac 暂时离线，正在等待重新连接。'}<small>当前显示的是本次打开时已读取的内容。</small></span></div>}
         {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="关闭错误提示" onClick={() => setError('')}><X size={16} /></button></div>}
         {!error && (syncErrors.messages || syncErrors.thread || syncErrors.queue) && <div className="error-banner" role="status"><span>{syncErrors.messages ? `消息暂未更新：${syncErrors.messages}` : syncErrors.thread ? `运行状态暂未更新：${syncErrors.thread}` : `队列暂未更新：${syncErrors.queue}`}</span></div>}

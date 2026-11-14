@@ -1,0 +1,24 @@
+.goal-summary { display: flex; align-items: center; gap: 8px; width: calc(100% - 32px); max-width: 850px; margin: 2px auto 8px; padding: 9px 12px; background: #f4f4f7; border: 1px solid #e9e9ee; border-radius: 14px; color: #666775; text-align: left; }
+.goal-summary > svg { flex-shrink: 0; }
+.goal-summary-text { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #41424e; font-size: 12px; }
+.goal-status { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; font-size: 11px; }
+.goal-summary.active .goal-status { color: #328771; }
+.goal-modal { max-width: 520px; }
+.goal-state-label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #727581; }
+.goal-state-label.active { color: #168a6d; }
+.goal-state-label.blocked, .goal-state-label.budgetLimited, .goal-state-label.usageLimited { color: #986a25; }
+.goal-objective { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; line-height: 1.7; max-height: 34vh; overflow-y: auto; color: #303140; margin: 15px 0; }
+.goal-stats { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 12px 0; color: #757787; font-size: 12px; border-top: 1px solid #eeeef3; }
+.goal-stats strong { color: #454753; font-weight: 500; }
+.goal-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 0; }
+.goal-actions button { flex: 1 0 auto; gap: 6px; min-height: 42px; padding: 8px 12px; font-size: 12px; }
+.goal-actions .goal-close { color: #a35b60; }
+.goal-note { color: #858694; font-size: 11px; line-height: 1.7; margin: 12px 0 0; }
+.goal-setup { border-radius: 12px; background: #f4f3fb; color: #6c6685; padding: 12px; font-size: 12px; line-height: 1.7; }
+.goal-setup small { display: block; margin-top: 5px; }
+.goal-feedback { color: #297a66; font-size: 12px; line-height: 1.6; }
+.goal-editor label { margin-top: 14px; }
+.goal-editor .goal-pause-option { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.goal-pause-option input { width: 16px; height: 16px; margin: 0; }
+.goal-close-confirm p { font-size: 17px; margin: 10px 0; }
+.goal-close-confirm > span { color: #787989; font-size: 13px; line-height: 1.8; }

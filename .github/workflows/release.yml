@@ -111,6 +111,7 @@ jobs:
           - Android：安装 AIRemote-android.apk（Android 8+），首次填写自己的 HTTPS 中继地址。使用长期发布签名，支持 GitHub 更新检查、校验和系统确认安装。
           - Mac：解压 AIRemote-macos.zip，将应用放入 /Applications 或 ~/Applications。Intel / Apple Silicon 通用；支持 GitHub 更新并保留私有配置。此构建采用 ad-hoc 签名，尚未经过 Apple 公证。
           - 自托管服务端：AIRemote-server.tar.gz，包含构建好的网页。可选启用六小时稳定版自动更新，健康检查失败会回退。
+          - Codex 对话目标（实验适配）：顶部靶心入口查看、修改、暂停/继续和关闭。首次启用需先正常退出 Codex，再通过 Mac AIRemote 的目标通道按钮打开；原有对话保留。通道未启用时只读。
 
           安装、配置、签名密钥与自动发布说明见仓库 README。SHA256SUMS 为下载校验，ANDROID-SIGNING.txt 为 APK 签名验证结果。安装包不包含个人账号、服务器凭据或聊天记录。
           NOTES

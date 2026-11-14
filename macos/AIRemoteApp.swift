@@ -24,6 +24,20 @@ struct UpdateStatus: Decodable {
     var plan: String?
 }
 
+struct GoalChannelStatus: Decodable {
+    var configured = false
+    var connected = false
+    var message: String?
+    init() {}
+    enum CodingKeys: String, CodingKey { case configured, connected, message }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        configured = try values.decodeIfPresent(Bool.self, forKey: .configured) ?? false
+        connected = try values.decodeIfPresent(Bool.self, forKey: .connected) ?? false
+        message = try values.decodeIfPresent(String.self, forKey: .message)
+    }
+}
+
 @MainActor final class ServiceModel: ObservableObject {
     @Published var status = RuntimeStatus()
     @Published var busy = false
@@ -32,6 +46,8 @@ struct UpdateStatus: Decodable {
     @Published var update: UpdateStatus?
     @Published var updating = false
     @Published var updateMessage = ""
+    @Published var goalChannel = GoalChannelStatus()
+    @Published var goalMessage = ""
     @Published var autoCheck = UserDefaults.standard.object(forKey: "AutoCheckUpdates") as? Bool ?? true {
         didSet { UserDefaults.standard.set(autoCheck, forKey: "AutoCheckUpdates") }
     }
@@ -77,6 +93,9 @@ struct UpdateStatus: Decodable {
             } else if error == nil {
                 message = "暂未取得服务状态"
             }
+            let goalResult = await Self.goalCommand(runtime: runtime, action: "--status")
+            if goalResult.0 == 0, let data = goalResult.1.data(using: .utf8),
+               let value = try? JSONDecoder().decode(GoalChannelStatus.self, from: data) { goalChannel = value }
         }
     }
 
@@ -125,6 +144,21 @@ struct UpdateStatus: Decodable {
         NSWorkspace.shared.open(url)
     }
 
+    func launchGoalChannel() {
+        guard !busy else { return }
+        busy = true; error = nil
+        goalMessage = "正在准备目标控制通道…"
+        Task {
+            let result = await Self.goalCommand(runtime: runtime, action: "--launch")
+            busy = false
+            if result.0 == 0, let data = result.1.data(using: .utf8),
+               let value = try? JSONDecoder().decode(GoalChannelStatus.self, from: data) {
+                goalMessage = value.message ?? "通道已准备好"
+            } else { goalMessage = "目标通道未启动"; error = String(result.1.suffix(1200)) }
+            refresh()
+        }
+    }
+
     func checkIfDue() {
         let checked = UserDefaults.standard.double(forKey: "LastUpdateCheck")
         if autoCheck && Date().timeIntervalSince1970 - checked > 6 * 3600 { checkUpdates(manual: false) }
@@ -168,6 +202,10 @@ struct UpdateStatus: Decodable {
 
     nonisolated private static func updateCommand(runtime: URL, arguments: [String]) async -> (Int32, String) {
         await process([runtime.appendingPathComponent("deploy/update_mac.py").path] + arguments, timeout: 300)
+    }
+
+    nonisolated private static func goalCommand(runtime: URL, action: String) async -> (Int32, String) {
+        await process([runtime.appendingPathComponent("deploy/setup_goal_channel.py").path, action], timeout: 20)
     }
 
     nonisolated private static func execute(directory: URL, runtime: URL, action: String?) async -> (Int32, String) {
@@ -248,6 +286,14 @@ struct ControlView: View {
                 Button("打开手机网页") { model.openWeb() }.frame(maxWidth: .infinity)
                 Button("查看日志") { model.openLogs() }.frame(maxWidth: .infinity)
             }.buttonStyle(.bordered).controlSize(.large)
+            VStack(alignment: .leading, spacing: 7) {
+                Button { model.launchGoalChannel() } label: {
+                    Label(model.goalChannel.connected ? "Codex 目标通道已连接" : "通过目标通道启动 Codex", systemImage: "target")
+                        .frame(maxWidth: .infinity)
+                }.buttonStyle(.bordered).disabled(model.busy || model.goalChannel.connected)
+                Text(model.goalMessage.isEmpty ? "首次启用：先正常退出 Codex，再用此按钮打开。原有对话会保留。" : model.goalMessage)
+                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             Divider()
             HStack {
                 Text("版本 \(model.version)").font(.system(size: 12)).foregroundStyle(.secondary)

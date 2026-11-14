@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 from app_server_rpc import AppServerRPC
 from control_server import Conflict, Controller, ControlServer, Journal, desktop_model_settings
 from desktop_ipc import DesktopError, DesktopIPC, MAX_FRAME_BYTES
+from goal_transport import GoalUnavailable, goal_revision
 
 
 THREAD = "11111111-1111-4111-8111-111111111111"
@@ -43,6 +44,30 @@ class FakeHistory:
 
     def delivery_receipt(self, _):
         return {'receivedInHistory': False}
+
+
+class FakeGoalOwner:
+    def __init__(self):
+        self.goal = None
+        self.calls = []
+        self.timeout_after_write = False
+
+    def owner(self, tid): return 'original-process-fixture'
+
+    def request(self, method, params, owner=None):
+        self.calls.append((method, dict(params), owner))
+        if method.endswith('/get'): return {'goal': dict(self.goal) if self.goal else None}
+        if owner != 'original-process-fixture': raise AssertionError('Owner changed mid-operation')
+        if params.get('origin') != 'user': raise AssertionError('Missing explicit user provenance')
+        if method.endswith('/clear'):
+            self.goal = None
+            return {'cleared': True}
+        if self.goal is None:
+            self.goal = {'threadId': THREAD, 'objective': '', 'status': 'paused', 'tokenBudget': None,
+                         'tokensUsed': 0, 'timeUsedSeconds': 0, 'createdAt': 10, 'updatedAt': 10}
+        self.goal.update({key: value for key, value in params.items() if key in {'objective', 'status', 'tokenBudget'}})
+        if self.timeout_after_write: raise TimeoutError('Acknowledgement lost after write')
+        return {'goal': dict(self.goal)}
 
 
 class WriteSafetyTests(unittest.TestCase):
@@ -209,6 +234,60 @@ class WriteSafetyTests(unittest.TestCase):
         _, result = self.request('GET', '/api/threads/' + THREAD)
         self.assertEqual(result['threadId'], THREAD)
         self.assertIn('unavailable', result['runtimeStatusNote'])
+
+    def test_goal_lifecycle_uses_one_owner_and_readback_not_message_delivery(self):
+        owner = FakeGoalOwner(); self.controller.goal_client = owner
+        path = '/api/threads/' + THREAD + '/goal'
+        _, state = self.request('GET', path)
+        for method, changes in [('POST', {'objective': 'Goal one', 'status': 'paused'}),
+                                ('PATCH', {'objective': 'Goal two', 'tokenBudget': 9000}),
+                                ('PATCH', {'status': 'active'}), ('PATCH', {'status': 'paused'}), ('DELETE', {})]:
+            _, result = self.request(method, path, dict(changes, revision=state['revision']), key=secrets.token_hex(8))
+            self.assertTrue(result['result']['nativeConfirmed'])
+            self.assertNotIn('delivery', result)
+            _, state = self.request('GET', path)
+        self.assertIsNone(state['goal'])
+        self.assertEqual(self.rpc.calls, [])
+        self.assertTrue(all(call[2] == 'original-process-fixture' for call in owner.calls if not call[0].endswith('/get')))
+
+    def test_stale_goal_edit_cannot_overwrite_desktop_changes(self):
+        owner = FakeGoalOwner(); self.controller.goal_client = owner
+        path = '/api/threads/' + THREAD + '/goal'
+        revision = goal_revision(None)
+        self.request('POST', path, {'revision': revision, 'objective': 'First', 'status': 'paused'})
+        with self.assertRaises(HTTPError) as error:
+            self.request('PATCH', path, {'revision': revision, 'objective': 'Stale edit'}, key='new-test-key')
+        self.assertEqual(error.exception.code, 409)
+        self.assertEqual(owner.goal['objective'], 'First')
+
+    def test_goal_replay_and_unknown_write_never_execute_twice(self):
+        owner = FakeGoalOwner(); self.controller.goal_client = owner
+        path = '/api/threads/' + THREAD + '/goal'
+        body = {'revision': goal_revision(None), 'objective': 'Paused', 'status': 'paused'}
+        _, first = self.request('POST', path, body)
+        _, second = self.request('POST', path, body)
+        self.assertTrue(second['replayed'])
+        self.assertEqual(first['operationId'], second['operationId'])
+        owner.timeout_after_write = True
+        body = {'revision': goal_revision(owner.goal), 'objective': 'Changed'}
+        with self.assertRaises(HTTPError): self.request('PATCH', path, body, key='unknown-goal-key')
+        writes = len(owner.calls)
+        status, replay = self.request('PATCH', path, body, key='unknown-goal-key')
+        self.assertEqual(status, 202)
+        self.assertEqual(replay['requestStatus'], 'outcome_unknown')
+        self.assertEqual(len(owner.calls), writes)
+
+    def test_goal_without_channel_is_readable_but_cannot_use_sdk_writer(self):
+        class Unavailable:
+            def request(self, *_args, **_kwargs): raise GoalUnavailable('Enable the Mac channel')
+            def owner(self, *_args): raise GoalUnavailable('Enable the Mac channel')
+        self.controller.goal_client = Unavailable()
+        state = self.controller.goal_snapshot(THREAD, {'threadGoal': None})
+        self.assertTrue(state['readable']); self.assertFalse(state['writable'])
+        with self.assertRaises(HTTPError) as error:
+            self.request('POST', '/api/threads/' + THREAD + '/goal', {'revision': state['revision'], 'objective': 'No sidecar'})
+        self.assertEqual(error.exception.code, 409)
+        self.assertEqual(self.rpc.calls, [])
 
 
 class TransportSafetyTests(unittest.TestCase):

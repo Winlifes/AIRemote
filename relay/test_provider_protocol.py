@@ -28,5 +28,15 @@ class ProviderProtocolTests(unittest.TestCase):
         for path in ['/api/providers/deepseek/api/session/prompt','/api/providers/deepseek/files/etc/passwd','/api/providers/deepseek/auth','/api/providers/codebuddy/projects']:
             with self.assertRaises(ValueError):self.request('GET',path)
 
+    def test_only_fixed_codex_goal_routes_are_exposed(self):
+        tid = SESSION.replace('session-', '')
+        for method in ['GET', 'POST', 'PATCH', 'DELETE']:
+            path = '/api/threads/' + tid + '/goal'
+            self.assertEqual(self.request(method, path)['path'], path)
+        for method, path in [('PUT', '/api/threads/' + tid + '/goal'),
+                             ('POST', '/api/threads/' + tid + '/goal/arbitrary'),
+                             ('PATCH', '/api/providers/deepseek/threads/' + SESSION + '/goal')]:
+            with self.assertRaises(ValueError): self.request(method, path)
+
 
 if __name__ == '__main__':unittest.main()

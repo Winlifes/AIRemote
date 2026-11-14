@@ -24,6 +24,7 @@ from codex_probe import History, ProbeHandler
 from desktop_ipc import DesktopError, DesktopIPC, TESTED_DESKTOP_VERSIONS
 from deepseek_adapter import DeepSeekAdapter, DeepSeekError
 from project_catalog import ProjectCatalog
+from goal_transport import GoalOwnerClient, GoalUnavailable, GoalRPCError, checked_goal, goal_revision, validate_goal_rpc
 
 
 THREAD_PATTERN = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
@@ -119,7 +120,7 @@ class Journal:
 
 
 class Controller:
-    def __init__(self, threads, artifact_roots, workspace_roots, directory, rpc=None, desktop_factory=DesktopIPC, discover_desktop_projects=False):
+    def __init__(self, threads, artifact_roots, workspace_roots, directory, rpc=None, desktop_factory=DesktopIPC, discover_desktop_projects=False, goal_client=None):
         self.initial_threads = {str(uuid.UUID(t)) for t in threads}
         self.artifact_roots = [Path(p).resolve(strict=True) for p in artifact_roots]
         self.workspace_roots = [Path(p).resolve(strict=True) for p in workspace_roots]
@@ -139,6 +140,7 @@ class Controller:
         self.deepseek = DeepSeekAdapter(state_directory.parent / 'deepseek-connection.json',
             Journal(state_directory / 'providers/deepseek'), self.artifact_roots)
         self.desktop_factory = desktop_factory
+        self.goal_client = goal_client or GoalOwnerClient()
         # A new desktop version can still serve read-only snapshots. Keep the
         # write version gate separate so an upgrade cannot silently freeze history.
         self.desktop_reader = (lambda: DesktopIPC(read_only=True)) if desktop_factory is DesktopIPC else desktop_factory
@@ -174,6 +176,7 @@ class Controller:
         history = self.history(thread_id)
         result = history.snapshot()
         result['modelSettings'] = None
+        native_state = None
         if self.discover_desktop_projects:
             result['projectId'] = self.catalog.project_for_thread(thread_id)
         try:
@@ -182,6 +185,7 @@ class Controller:
                 # unloaded desktop view. Mutating delivery keeps its full timeout.
                 desktop.timeout = 2
                 snapshot = desktop.state(thread_id)
+                native_state = snapshot['conversationState']
             result.update({"runtimeStatus": snapshot["conversationState"].get("threadRuntimeStatus"),
                            "runtimeSource": "original desktop IPC owner",
                            "runtimeStatusNote": "Observed directly from the existing desktop owner.",
@@ -192,7 +196,70 @@ class Controller:
             if thread_id in self.rpc.created_threads or thread_id in self.recoverable_created:
                 thread = self.rpc.request("thread/read", {"threadId": thread_id})["thread"]
                 result.update({"runtimeStatus": thread.get("status"), "runtimeSource": "connector-created Codex thread"})
+        result['goalState'] = self.goal_snapshot(thread_id, native_state)
         return result
+
+    def goal_snapshot(self, thread_id, native_state=None):
+        thread_id = self.allowed(thread_id)
+        message = ''
+        try:
+            result = self.goal_client.request('thread/goal/get', {'threadId': thread_id})
+            goal = checked_goal(result['goal'], thread_id)
+            return {'goal': goal, 'readable': True, 'writable': True, 'revision': goal_revision(goal),
+                    'source': 'original-desktop-owner', 'message': ''}
+        except (GoalUnavailable, GoalRPCError, OSError, ValueError, KeyError) as error:
+            message = str(error)
+        if native_state is not None and 'threadGoal' in native_state:
+            try:
+                goal = checked_goal(native_state['threadGoal'], thread_id)
+                return {'goal': goal, 'readable': True, 'writable': False, 'revision': goal_revision(goal),
+                        'source': 'original-desktop-snapshot', 'message': message}
+            except ValueError:
+                pass
+        try:
+            # Read persisted metadata only. Never load/resume an existing chat here.
+            goal = checked_goal(self.rpc.request('thread/goal/get', {'threadId': thread_id}, timeout=3)['goal'], thread_id)
+            return {'goal': goal, 'readable': True, 'writable': False, 'revision': goal_revision(goal),
+                    'source': 'persisted-goal', 'message': message}
+        except (RuntimeError, OSError, KeyError, TypeError, ValueError):
+            return {'goal': None, 'readable': False, 'writable': False, 'revision': None,
+                    'source': 'unavailable', 'message': message or '目标状态暂未同步，请稍后刷新。'}
+
+    def _goal_apply(self, kind, payload):
+        if set(payload) - {'threadId', 'revision', 'objective', 'status', 'tokenBudget'}:
+            raise ValueError('Unsupported goal changes')
+        thread_id = self.allowed(payload['threadId'])
+        if not isinstance(payload.get('revision'), str):
+            raise ValueError('Refresh the goal before making changes')
+        owner = self.goal_client.owner(thread_id)
+        current = checked_goal(self.goal_client.request('thread/goal/get', {'threadId': thread_id}, owner=owner)['goal'], thread_id)
+        if payload['revision'] != goal_revision(current):
+            raise Conflict('目标已在其他地方更新，请刷新后再操作。')
+        if kind == 'goal_create' and current is not None:
+            raise Conflict('此对话已经有目标，请修改当前目标。')
+        if kind != 'goal_create' and current is None:
+            raise Conflict('当前目标已关闭，请刷新后再操作。')
+        if kind == 'goal_clear':
+            if set(payload) != {'threadId', 'revision'}:
+                raise ValueError('Closing a goal only accepts its current revision')
+            method, params = 'thread/goal/clear', {'threadId': thread_id, 'origin': 'user'}
+        else:
+            params = {key: payload[key] for key in ('objective', 'status', 'tokenBudget') if key in payload}
+            if kind == 'goal_create':
+                if 'objective' not in params:
+                    raise ValueError('Goal objective is required')
+                params.setdefault('status', 'active')
+            if 'status' in params and params['status'] not in {'active', 'paused'}:
+                raise ValueError('Use active or paused, or close the goal')
+            method, params = 'thread/goal/set', dict(params, threadId=thread_id, origin='user')
+        validate_goal_rpc(method, params)
+        acknowledged = self.goal_client.request(method, params, owner=owner)
+        # Read back from exactly the same process; a queued relay job isn't success.
+        observed = checked_goal(self.goal_client.request('thread/goal/get', {'threadId': thread_id}, owner=owner)['goal'], thread_id)
+        confirmed = observed is None if kind == 'goal_clear' else goal_revision(acknowledged['goal']) == goal_revision(observed)
+        return {'threadId': thread_id, 'goal': observed, 'revision': goal_revision(observed),
+                'transport': 'original-desktop-stdio-owner', 'acknowledged': True,
+                'nativeConfirmed': confirmed, 'confirmation': 'observed' if confirmed else 'changed-after-ack'}
 
     def receipt(self, row):
         payload = json.loads(row["payload"])
@@ -293,6 +360,8 @@ class Controller:
                 result.update({"clientUserMessageId": client_id, "turnId": started["turn"]["id"], "deliveryState": "accepted"})
             return result
         thread_id = self.allowed(payload["threadId"])
+        if kind in {'goal_create', 'goal_update', 'goal_clear'}:
+            return self._goal_apply(kind, payload)
         if kind == "send":
             text = payload["text"]
             if not isinstance(text, str) or not text.strip():
@@ -372,9 +441,9 @@ class ControlHandler(ProbeHandler):
             status = 403
         elif isinstance(error, LookupError):
             status = 404
-        elif isinstance(error, Conflict):
+        elif isinstance(error, (Conflict, GoalUnavailable)):
             status = 409
-        elif isinstance(error, (DesktopError, RPCError, DeepSeekError, ConnectionError, TimeoutError, OSError)):
+        elif isinstance(error, (DesktopError, RPCError, DeepSeekError, GoalRPCError, ConnectionError, TimeoutError, OSError)):
             status = 503
         else:
             status = 400
@@ -408,7 +477,7 @@ class ControlHandler(ProbeHandler):
                      'connected': codex_online, 'readable': codex_readable,
                      'status': 'connected' if codex_online else 'unavailable',
                      'statusLabel': ('已连接' if codex_write else '已连接 · 写入版本待验证') if codex_online else '客户端未连接，历史可读',
-                     'features': ['projects', 'messages', 'runtime-status', 'artifacts', 'queue'] + (['send', 'create', 'queue-edit', 'queue-delete', 'queue-send', 'queue-reorder'] if codex_write else [])},
+                     'features': ['projects', 'messages', 'runtime-status', 'artifacts', 'queue', 'goals'] + (['send', 'create', 'queue-edit', 'queue-delete', 'queue-send', 'queue-reorder'] if codex_write else [])},
                     controller.deepseek.descriptor()]})
             elif path.startswith('/api/providers/deepseek/'):
                 return self.deepseek_get(path[len('/api/providers/deepseek'):])
@@ -443,13 +512,15 @@ class ControlHandler(ProbeHandler):
                         "ETag": '"' + hashlib.sha256(content).hexdigest() + '"',
                     })
                     return
-                match = re.fullmatch(r"/api/threads/(" + THREAD_PATTERN + r")(?:/(queue|messages|artifacts))?", path)
+                match = re.fullmatch(r"/api/threads/(" + THREAD_PATTERN + r")(?:/(queue|messages|artifacts|goal))?", path)
                 if not match:
                     self.respond(404, {"error": "Unknown endpoint"})
                     return
                 thread_id = controller.allowed(match.group(1))
                 resource = match.group(2)
-                if resource == "queue":
+                if resource == 'goal':
+                    self.respond(200, controller.goal_snapshot(thread_id))
+                elif resource == "queue":
                     self.respond(200, {"threadId": thread_id, "items": controller.queue.list(thread_id)})
                 elif resource == "messages":
                     query = parse_qs(urlsplit(self.path).query)
@@ -524,14 +595,16 @@ class ControlHandler(ProbeHandler):
             if path == "/api/threads" and self.command == "POST":
                 kind, payload = "create", body
             else:
-                match = re.fullmatch(r"/api/threads/(" + THREAD_PATTERN + r")/(messages|queue)(?:/([0-9a-f-]+|order))?(?:/(send))?", path)
+                match = re.fullmatch(r"/api/threads/(" + THREAD_PATTERN + r")/(messages|queue|goal)(?:/([0-9a-f-]+|order))?(?:/(send))?", path)
                 if not match:
                     self.respond(404, {"error": "Unknown endpoint"})
                     return
                 thread_id = self.server.controller.allowed(match.group(1))
                 resource, item, send = match.group(2), match.group(3), match.group(4)
                 payload = {**body, "threadId": thread_id}
-                if resource == "messages" and not item and self.command == "POST":
+                if resource == 'goal' and not item and not send and self.command in {'POST', 'PATCH', 'DELETE'}:
+                    kind = {'POST': 'goal_create', 'PATCH': 'goal_update', 'DELETE': 'goal_clear'}[self.command]
+                elif resource == "messages" and not item and self.command == "POST":
                     kind = "send"
                 elif resource == "queue":
                     if not item and self.command == "POST":

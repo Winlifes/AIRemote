@@ -11,7 +11,17 @@ export type Thread = {
   latestPersistedTurnStatus: string | null; runtimeSource?: string; projectId?: string;
   turns: { turn_id: string; status: string; started_at?: number | null; completed_at?: number | null }[];
   modelSettings?: ModelSettings | null;
+  goalState?: GoalState;
 };
+export type Goal = { threadId: string; objective: string; status: 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete'; tokenBudget: number | null; tokensUsed: number; timeUsedSeconds: number; createdAt: number; updatedAt: number };
+export type GoalState = { goal: Goal | null; readable: boolean; writable: boolean; revision: string | null; source: string; message: string };
+export function goalPresentation(goal: Goal) {
+  const labels: Record<string, string> = { active: '进行中', paused: '已暂停', blocked: '受阻', usageLimited: '用量受限', budgetLimited: '预算已用完', complete: '已完成' };
+  const seconds = Math.max(0, Math.floor(goal.timeUsedSeconds || 0));
+  const time = seconds >= 3600 ? `${Math.floor(seconds / 3600)} 小时 ${Math.floor(seconds % 3600 / 60)} 分` : seconds >= 60 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${seconds} 秒`;
+  return { label: labels[goal.status] || '状态未知', active: goal.status === 'active', time,
+    tokens: Math.max(0, goal.tokensUsed || 0).toLocaleString('zh-CN'), budget: goal.tokenBudget == null ? null : goal.tokenBudget.toLocaleString('zh-CN') };
+}
 export type ModelSettings = { model?: string | null; reasoningEffort?: string | null; collaborationMode?: string | null; permissionMode?: string | null; permissionProfile?: string | null; approvalPolicy?: string | null; source: string };
 
 export function modelPresentation(settings?: ModelSettings | null) {
