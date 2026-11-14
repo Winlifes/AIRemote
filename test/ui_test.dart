@@ -130,6 +130,112 @@ void main() {
       },
     );
   }
+  testWidgets(
+    'composer morph keeps one focused input and preserves its draft',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      tester.view.viewPadding = const FakeViewPadding(top: 24, bottom: 24);
+      addTearDown(tester.view.reset);
+      final state = demoWorkspace();
+      state.threads['a'] = thread('a');
+      addTearDown(state.dispose);
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: const Key('qa-frame'),
+          child: AIRemoteApp(
+            workspace: state,
+            updater: null,
+            native: NativePlatform(),
+            connect: (_) async {},
+            changeServer: () {},
+          ),
+        ),
+      );
+      await tester.pump();
+      final field = find.byKey(const Key('composer-input'));
+      final editableFinder = find.descendant(
+        of: field,
+        matching: find.byType(EditableText),
+      );
+      final editable = tester.state<EditableTextState>(editableFinder);
+      Rect bounds() =>
+          tester.getRect(find.byKey(const Key('message-composer')));
+      final collapsed = bounds();
+      expect(tester.widget<TextField>(field).decoration?.hintText, isNull);
+      await renderEvidence(tester, 'composer-collapsed');
+
+      await tester.tap(field);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 70));
+      final opening = bounds();
+      expect(opening.width, greaterThan(collapsed.width));
+      expect(opening.width, lessThan(366));
+      expect(opening.height, greaterThan(collapsed.height));
+      expect(editable.widget.focusNode.hasFocus, true);
+      expect(tester.testTextInput.isVisible, true);
+      await renderEvidence(tester, 'composer-expanding');
+
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      final opened = bounds();
+      expect(opened.width, closeTo(366, 1));
+      expect(opened.bottom, closeTo(844 - 300 - 8, 1));
+      expect(tester.state<EditableTextState>(editableFinder), same(editable));
+      expect(editable.widget.focusNode.hasFocus, true);
+      await renderEvidence(tester, 'composer-focused');
+
+      const draft = '继续完善手机端';
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: draft,
+          selection: TextSelection.collapsed(offset: 3),
+          composing: TextRange(start: 0, end: draft.length),
+        ),
+      );
+      state.changed();
+      await tester.pump();
+      expect(state.draft, draft);
+      expect(
+        editable.widget.controller.value.composing,
+        const TextRange(start: 0, end: draft.length),
+      );
+
+      await tester.tapAt(const Offset(200, 160));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 70));
+      final closing = bounds();
+      expect(closing.width, lessThan(opened.width));
+      expect(closing.width, greaterThan(collapsed.width));
+      expect(closing.height, lessThan(opened.height));
+      expect(editable.widget.focusNode.hasFocus, false);
+      await renderEvidence(tester, 'composer-collapsing');
+
+      // A second focus reverses the current morph instead of snapping or
+      // replacing the editor with a fresh input connection.
+      editable.widget.focusNode.requestFocus();
+      await tester.pump();
+      expect(bounds().width, closeTo(closing.width, 1));
+      await tester.pump(const Duration(milliseconds: 70));
+      expect(bounds().width, greaterThan(closing.width));
+      expect(tester.state<EditableTextState>(editableFinder), same(editable));
+      editable.widget.focusNode.unfocus();
+      await tester.pump();
+
+      tester.view.viewInsets = const FakeViewPadding();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(bounds().width, closeTo(collapsed.width, 1));
+      expect(bounds().height, closeTo(collapsed.height, 1));
+      expect(editable.widget.controller.text, draft);
+      expect(editable.widget.controller.selection.baseOffset, 3);
+      expect(tester.state<EditableTextState>(editableFinder), same(editable));
+      await renderEvidence(tester, 'composer-restored');
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
   testWidgets('keyboard resizes chat without duplicating bottom safe padding', (
     tester,
   ) async {
@@ -151,14 +257,31 @@ void main() {
         ),
       ),
     );
-    await tester.tap(find.byType(TextField).first);
+    await tester.tap(find.byKey(const Key('composer-input')));
     await tester.pump();
     tester.view.viewInsets = const FakeViewPadding(bottom: 300);
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     final composer = tester.getRect(find.byKey(const Key('message-composer')));
     expect(composer.bottom, closeTo(844 - 300 - 8, 1));
     expect(tester.takeException(), isNull);
     await renderEvidence(tester, 'flutter-keyboard');
+    // Android can dismiss the keyboard while leaving its TextField focused.
+    tester.view.viewInsets = const FakeViewPadding();
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('composer-input')))
+          .focusNode!
+          .hasFocus,
+      false,
+    );
+    expect(
+      tester.getRect(find.byKey(const Key('message-composer'))).width,
+      closeTo(322, 1),
+    );
     await tester.pumpWidget(const SizedBox.shrink());
   });
   testWidgets('small keyboard viewport keeps a long draft and queue usable', (
@@ -197,10 +320,11 @@ void main() {
         ),
       ),
     );
-    await tester.tap(find.byType(TextField).first);
+    await tester.tap(find.byKey(const Key('composer-input')));
     await tester.pump();
     tester.view.viewInsets = const FakeViewPadding(bottom: 280);
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(tester.takeException(), isNull);
     final send = tester.getRect(find.byTooltip('发送指令'));
     expect(send.bottom, lessThanOrEqualTo(640 - 280));

@@ -22,6 +22,8 @@ class ComposerDock extends StatefulWidget {
 
 class _ComposerDockState extends State<ComposerDock> {
   final input = TextEditingController(), focus = FocusNode();
+  bool menuOpen = false;
+  int focusRevision = 0;
   @override
   void initState() {
     super.initState();
@@ -29,7 +31,30 @@ class _ComposerDockState extends State<ComposerDock> {
   }
 
   void _focusChanged() {
+    focusRevision++;
     if (mounted) setState(() {});
+  }
+
+  @override
+  void didUpdateWidget(ComposerDock oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Android's keyboard-dismiss button can hide the IME without blurring the
+    // field. Finish that interaction, while allowing a newer focus to win.
+    if (oldWidget.keyboardVisible && !widget.keyboardVisible && !menuOpen) {
+      final revision = focusRevision;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted &&
+            !widget.keyboardVisible &&
+            !menuOpen &&
+            focusRevision == revision) {
+          focus.unfocus();
+        }
+      });
+    }
+  }
+
+  void _menu(bool open) {
+    if (mounted) setState(() => menuOpen = open);
   }
 
   @override
@@ -50,12 +75,10 @@ class _ComposerDockState extends State<ComposerDock> {
       );
     }
     final goal = state.goal;
-    final expanded =
-        focus.hasFocus ||
-        input.text.isNotEmpty ||
-        state.sendMode == 'queue' ||
-        state.queue.isNotEmpty ||
-        goal != null;
+    final expanded = focus.hasFocus || menuOpen;
+    final duration = MediaQuery.disableAnimationsOf(context)
+        ? Duration.zero
+        : const Duration(milliseconds: 260);
     final bottom = widget.keyboardVisible
         ? 8.0
         : MediaQuery.viewPaddingOf(context).bottom + 10;
@@ -84,7 +107,9 @@ class _ComposerDockState extends State<ComposerDock> {
               ].contains(state.receipt['kind'])
         ? 'Mac 已受理 · 正在核对原对话'
         : null;
-    return Padding(
+    return AnimatedPadding(
+      duration: duration,
+      curve: Curves.easeOutCubic,
       padding: EdgeInsets.fromLTRB(12, 5, 12, bottom),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 900),
@@ -159,113 +184,132 @@ class _ComposerDockState extends State<ComposerDock> {
                   ],
                 ),
               ),
-            if (state.queue.isNotEmpty) _QueueDock(state: state),
-            if (goal != null) GoalDock(state: state),
-            // The overlapping outline belongs to the composer, like the source app.
-            Container(
-              key: const Key('message-composer'),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                border: Border.all(color: const Color(0xffe7e7eb)),
-                borderRadius: BorderRadius.circular(expanded ? 26 : 34),
+            TweenAnimationBuilder<double>(
+              tween: Tween(end: expanded ? 1 : 0),
+              duration: duration,
+              curve: Curves.easeOutCubic,
+              builder: (context, progress, _) => Padding(
+                padding: EdgeInsets.symmetric(horizontal: 22 * (1 - progress)),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (state.queue.isNotEmpty) _QueueDock(state: state),
+                    if (goal != null) GoalDock(state: state),
+                    _surface(context, expanded, progress, duration),
+                  ],
+                ),
               ),
-              padding: expanded
-                  ? const EdgeInsets.fromLTRB(16, 10, 8, 7)
-                  : const EdgeInsets.fromLTRB(5, 5, 5, 5),
-              child: expanded
-                  ? Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        TextField(
-                          controller: input,
-                          focusNode: focus,
-                          minLines: 1,
-                          maxLines: widget.keyboardVisible ? 3 : 5,
-                          textCapitalization: TextCapitalization.sentences,
-                          style: const TextStyle(fontSize: 16, height: 1.6),
-                          decoration: InputDecoration(
-                            hintText: state.sendMode == 'queue'
-                                ? '写下下一步指令…'
-                                : '用 ${state.providerName} 工作',
-                            border: InputBorder.none,
-                            enabledBorder: InputBorder.none,
-                            focusedBorder: InputBorder.none,
-                            fillColor: Colors.transparent,
-                            contentPadding: const EdgeInsets.symmetric(
-                              vertical: 5,
-                            ),
-                            isDense: true,
-                          ),
-                          onChanged: state.setDraft,
-                        ),
-                        Row(
-                          children: [
-                            _actions(context),
-                            const Spacer(),
-                            PopupMenuButton<String>(
-                              tooltip: '指令发送方式',
-                              initialValue: state.sendMode,
-                              onSelected: (value) {
-                                state.sendMode = value;
-                                state.changed();
-                                focus.requestFocus();
-                              },
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(
-                                  value: 'send',
-                                  child: Text('立即发送'),
-                                ),
-                                PopupMenuItem(
-                                  value: 'queue',
-                                  child: Text('加入原生队列'),
-                                ),
-                              ],
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 9,
-                                  vertical: 12,
-                                ),
-                                child: Text(
-                                  state.sendMode == 'queue'
-                                      ? '加入队列'
-                                      : state.providerName,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: muted,
-                                  ),
-                                ),
-                              ),
-                            ),
-                            _send(state),
-                          ],
-                        ),
-                      ],
-                    )
-                  : Row(
-                      children: [
-                        _actions(context),
-                        Expanded(
-                          child: TextField(
-                            controller: input,
-                            focusNode: focus,
-                            maxLines: 1,
-                            decoration: InputDecoration(
-                              hintText: '用 ${state.providerName} 工作',
-                              border: InputBorder.none,
-                              enabledBorder: InputBorder.none,
-                              focusedBorder: InputBorder.none,
-                              fillColor: Colors.transparent,
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 5,
-                              ),
-                              isDense: true,
-                            ),
-                            onChanged: state.setDraft,
-                          ),
-                        ),
-                        _send(state),
-                      ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _surface(
+    BuildContext context,
+    bool expanded,
+    double progress,
+    Duration duration,
+  ) {
+    final state = widget.state;
+    return TextFieldTapRegion(
+      key: const Key('composer-input-region'),
+      child: Container(
+        key: const Key('message-composer'),
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: const Color(0xffe7e7eb)),
+          borderRadius: BorderRadius.circular(34 - 8 * progress),
+        ),
+        constraints: const BoxConstraints(minHeight: 56),
+        child: Stack(
+          fit: StackFit.passthrough,
+          children: [
+            Padding(
+              padding: EdgeInsets.lerp(
+                const EdgeInsets.fromLTRB(54, 15, 54, 15),
+                const EdgeInsets.fromLTRB(16, 12, 16, 60),
+                progress,
+              )!,
+              child: AnimatedSize(
+                duration: duration,
+                curve: Curves.easeOutCubic,
+                alignment: Alignment.bottomCenter,
+                child: Semantics(
+                  label: '新的 AI 指令',
+                  // One EditableText stays mounted throughout the morph. Its
+                  // focus, selection, composing range and IME connection survive.
+                  child: TextField(
+                    key: const Key('composer-input'),
+                    controller: input,
+                    focusNode: focus,
+                    minLines: 1,
+                    maxLines: expanded ? (widget.keyboardVisible ? 3 : 5) : 1,
+                    textInputAction: TextInputAction.newline,
+                    textCapitalization: TextCapitalization.sentences,
+                    style: const TextStyle(fontSize: 16, height: 1.6),
+                    decoration: InputDecoration(
+                      hintText: state.sendMode == 'queue' ? '写下下一步指令…' : null,
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      fillColor: Colors.transparent,
+                      contentPadding: EdgeInsets.zero,
+                      isDense: true,
                     ),
+                    onChanged: state.setDraft,
+                    onTapOutside: (_) => focus.unfocus(),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(left: 4, bottom: 4, child: _actions(context)),
+            Positioned(right: 4, bottom: 4, child: _send(state)),
+            Positioned(
+              right: 53,
+              bottom: 4,
+              child: ExcludeFocus(
+                excluding: progress < .95,
+                child: IgnorePointer(
+                  ignoring: progress < .95,
+                  child: ExcludeSemantics(
+                    excluding: progress < .95,
+                    child: Opacity(
+                      opacity: progress,
+                      child: PopupMenuButton<String>(
+                        tooltip: '指令发送方式',
+                        initialValue: state.sendMode,
+                        onOpened: () => _menu(true),
+                        onCanceled: () => _menu(false),
+                        onSelected: (value) {
+                          _menu(false);
+                          state.sendMode = value;
+                          state.changed();
+                          focus.requestFocus();
+                        },
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(value: 'send', child: Text('立即发送')),
+                          PopupMenuItem(value: 'queue', child: Text('加入原生队列')),
+                        ],
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 9,
+                            vertical: 12,
+                          ),
+                          child: Text(
+                            state.sendMode == 'queue'
+                                ? '加入队列'
+                                : state.providerName,
+                            style: const TextStyle(fontSize: 12, color: muted),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
           ],
         ),
@@ -303,7 +347,10 @@ class _ComposerDockState extends State<ComposerDock> {
     tooltip: '对话操作',
     icon: const Icon(Icons.add, color: ink, size: 26),
     position: PopupMenuPosition.over,
+    onOpened: () => _menu(true),
+    onCanceled: () => _menu(false),
     onSelected: (value) {
+      _menu(false);
       switch (value) {
         case 'send':
         case 'queue':
@@ -311,8 +358,10 @@ class _ComposerDockState extends State<ComposerDock> {
           widget.state.changed();
           focus.requestFocus();
         case 'files':
+          focus.unfocus();
           widget.files();
         case 'new':
+          focus.unfocus();
           widget.newChat();
       }
     },

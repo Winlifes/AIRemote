@@ -569,7 +569,7 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
           <div className="composer-stack">
           <QueueDock reorder={!!provider?.features.includes('queue-reorder')} items={queue} active={stat.tone === 'green'} enabled={!!canWrite} onSend={item => queueAction(item, 'send')} onDelete={item => queueAction(item, 'delete')} onEdit={item => { setEditing(item); setEditText(queueText(item)); }} onMove={(item, direction) => queueAction(item, direction)} onClear={() => setClearing(true)} />
         {providerId === 'codex' && <GoalControl key={selected} state={thread?.goalState} open={goalOpen} close={() => setGoalOpen(false)} show={() => { setError(''); setGoalOpen(true); }} online={device.connectorOnline && !syncErrors.thread && !loading} busy={!!busy} error={error} change={changeGoal} Modal={Modal} />}
-          <Composer mobile={mobile} value={draft} onChange={value => setDrafts(d => ({ ...d, [selected]: value }))} onSend={send} mode={sendMode} setMode={setSendMode} providerId={providerId} providerName={providerName} busy={!!busy} enabled={!!canWrite} hasQueue={!!queue.length} hasGoal={!!thread?.goalState?.goal} onFiles={() => setFilesOpen(true)} onNewChat={showNewChat} />
+          <Composer mobile={mobile} value={draft} onChange={value => setDrafts(d => ({ ...d, [selected]: value }))} onSend={send} mode={sendMode} setMode={setSendMode} providerId={providerId} providerName={providerName} busy={!!busy} enabled={!!canWrite} onFiles={() => setFilesOpen(true)} onNewChat={showNewChat} />
           </div>
           <div className="composer-caption">{busy || (sendMode === 'queue' ? `原生队列由 ${providerName} 自动执行，空闲时可能立即开始` : stat.tone === 'green' ? '运行中发送会追加到当前对话 · ⌘ / Ctrl + Enter 发送' : '在同一对话继续下一轮 · ⌘ / Ctrl + Enter 发送')}</div>
         </div>
@@ -601,10 +601,10 @@ function ModelStatus({ thread, online }: { thread?: Thread; online: boolean }) {
   </div>;
 }
 
-function Composer({ mobile, value, onChange, onSend, mode, setMode, providerId, providerName, busy, enabled, hasQueue, hasGoal, onFiles, onNewChat }: {
+function Composer({ mobile, value, onChange, onSend, mode, setMode, providerId, providerName, busy, enabled, onFiles, onNewChat }: {
   mobile: boolean; value: string; onChange: (value: string) => void; onSend: () => void;
   mode: 'send' | 'queue'; setMode: (mode: 'send' | 'queue') => void;
-  providerId: ProviderId; providerName: string; busy: boolean; enabled: boolean; hasQueue: boolean; hasGoal: boolean;
+  providerId: ProviderId; providerName: string; busy: boolean; enabled: boolean;
   onFiles: () => void; onNewChat: () => void;
 }) {
   const [focused, setFocused] = useState(false);
@@ -612,7 +612,7 @@ function Composer({ mobile, value, onChange, onSend, mode, setMode, providerId, 
   const form = useRef<HTMLFormElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const tools = useRef<HTMLButtonElement>(null);
-  const expanded = !mobile || focused || !!value || mode === 'queue' || hasQueue || hasGoal || menuOpen;
+  const expanded = !mobile || focused || menuOpen;
   useLayoutEffect(() => {
     const element = input.current;
     if (!element) return;
@@ -639,7 +639,7 @@ function Composer({ mobile, value, onChange, onSend, mode, setMode, providerId, 
   return <form ref={form} className={`composer ${expanded ? 'expanded' : 'collapsed'}`} onSubmit={event => { event.preventDefault(); onSend(); }} onBlurCapture={() => {
     requestAnimationFrame(() => { if (!form.current?.contains(document.activeElement)) setFocused(false); });
   }}>
-    <textarea ref={input} aria-label="新的 AI 指令" value={value} onChange={event => onChange(event.target.value)} onFocus={() => setFocused(true)} placeholder={mode === 'queue' ? '写下下一步指令…' : `用 ${providerName} 工作`} rows={1} maxLength={120000} onKeyDown={event => {
+    <textarea ref={input} aria-label="新的 AI 指令" value={value} onChange={event => onChange(event.target.value)} onFocus={() => setFocused(true)} placeholder={mode === 'queue' ? '写下下一步指令…' : undefined} rows={1} maxLength={120000} onKeyDown={event => {
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); onSend(); }
     }} />
     <div className="composer-bottom">

@@ -54,11 +54,14 @@
  .message.commentary .markdown{font-size:14px;line-height:1.9;color:#626269}
  .message.user .message-main>.markdown{font-size:15px;line-height:1.8}
  .composer-wrap{padding:9px 12px calc(12px + env(safe-area-inset-bottom));background:#fafafa;border:0}
- .composer{width:100%;margin:0 auto;padding:14px 13px 10px;border:1px solid #eeeeef;border-radius:26px;background:#fff;box-shadow:0 3px 20px #00000004}
+ .composer-stack{width:100%;transition:width .26s cubic-bezier(.22,.61,.36,1)}
+ .composer-stack:has(>.composer.collapsed){width:calc(100% - 44px)}
+ .composer{display:block;width:100%;min-height:56px;margin:0 auto;padding:12px 16px 60px;border:1px solid #eeeeef;border-radius:26px;background:#fff;box-shadow:0 3px 20px #00000004;transition:padding .26s cubic-bezier(.22,.61,.36,1),border-radius .26s cubic-bezier(.22,.61,.36,1)}
  .composer:focus-within{border-color:#e0e0e3;box-shadow:0 3px 22px #00000006}
- .composer textarea{display:block;width:100%;min-height:28px;max-height:140px;padding:0 2px;border:0;background:transparent;font-size:16px;line-height:28px;color:#252529;resize:none;overflow-y:auto}
+ .composer textarea{display:block;width:100%;min-height:28px;max-height:140px;padding:0;border:0;background:transparent;font-size:16px;line-height:28px;color:#252529;resize:none;overflow-y:auto;transition:height .26s cubic-bezier(.22,.61,.36,1)}
  .composer textarea::placeholder{font-size:16px;color:#99999d}
- .composer-bottom{display:flex;align-items:center;gap:6px;margin-top:10px}
+ .composer-bottom{position:absolute;left:4px;right:4px;bottom:4px;height:48px;display:flex;align-items:center;gap:6px;margin:0;pointer-events:none}
+ .composer-add,.composer-actions,.composer .send-mode,.composer .send-button{pointer-events:auto}
  .composer-add{height:40px;width:36px;min-width:36px;min-height:40px;border-radius:50%;color:#141414}
  .composer-provider{font-size:11px;color:#5f5f65;gap:5px}
  .composer-provider>.inline-provider-icon{width:16px;height:16px}
@@ -66,12 +69,10 @@
  .send-mode select{font-size:11px;min-height:40px;color:#5e5e65;max-width:88px}
  .send-button{width:40px;height:40px;min-width:40px;border-radius:50%;background:#111;color:#fff}
  .send-button:disabled{background:#e3e3e6;color:#fff;opacity:1}
- .composer.collapsed{width:calc(100% - 24px);min-height:58px;border-radius:36px;display:grid;grid-template-columns:36px minmax(0,1fr) 40px;grid-template-rows:40px;column-gap:5px;align-items:center;padding:8px}
- .composer.collapsed>textarea{grid-column:2;grid-row:1;height:28px;min-height:28px;max-height:28px;white-space:nowrap;overflow:hidden;padding:0 3px}
- .composer.collapsed>.composer-bottom,.composer.collapsed .composer-controls{display:contents}
- .composer.collapsed .composer-tools{grid-column:1;grid-row:1}
- .composer.collapsed .send-button{grid-column:3;grid-row:1}
- .composer.collapsed .composer-provider,.composer.collapsed .send-mode{display:none}
+ .composer.collapsed{border-radius:34px;padding:15px 54px}
+ .composer.collapsed>textarea{height:28px;min-height:28px;max-height:28px;white-space:nowrap;overflow:hidden}
+ .composer-provider,.composer .send-mode{opacity:1;visibility:visible;transition:opacity .2s ease,visibility 0s}
+ .composer.collapsed .composer-provider,.composer.collapsed .send-mode{opacity:0;visibility:hidden;pointer-events:none;transition:opacity .15s ease,visibility 0s .15s}
  .composer-caption{display:none}
  .inline-queue{width:calc(100% - 16px);border-radius:20px 20px 0 0;background:#fff}
  .composer-actions{bottom:calc(100% + 14px);border-radius:18px}
@@ -85,4 +86,4 @@
  .welcome p{font-size:13px;color:#88888d;line-height:1.9;margin:18px 0 25px}
  .welcome>.primary{background:#111;border-radius:28px;box-shadow:none;min-height:48px}
 }
-@media(prefers-reduced-motion:reduce){.app>.sidebar,.app.drawer-open>.sidebar,.drawer-backdrop,.app.drawer-open>.drawer-backdrop{transition:none}}
+@media(prefers-reduced-motion:reduce){.app>.sidebar,.app.drawer-open>.sidebar,.drawer-backdrop,.app.drawer-open>.drawer-backdrop,.composer-stack,.composer,.composer textarea,.composer-provider,.composer .send-mode{transition:none}}
