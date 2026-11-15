@@ -194,7 +194,8 @@ class _ComposerDockState extends State<ComposerDock> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (state.queue.isNotEmpty) _QueueDock(state: state),
-                    if (goal != null) GoalDock(state: state),
+                    if (goal != null)
+                      GoalDock(state: state, onMenuChanged: _menu),
                     _surface(context, expanded, progress, duration),
                   ],
                 ),
@@ -406,88 +407,199 @@ class _ComposerDockState extends State<ComposerDock> {
 
 class GoalDock extends StatelessWidget {
   final Workspace state;
-  const GoalDock({super.key, required this.state});
+  final ValueChanged<bool>? onMenuChanged;
+  const GoalDock({super.key, required this.state, this.onMenuChanged});
   @override
   Widget build(BuildContext context) {
     final goal = state.goal!;
     final enabled =
         state.online && state.goalState?['writable'] == true && !state.busy;
-    return Container(
+    final status = goal['status'] as String?;
+    final label = switch (status) {
+      'active' => '进行中',
+      'paused' => '已暂停',
+      'blocked' => '受阻',
+      'budgetLimited' => '预算已用完',
+      'usageLimited' => '用量受限',
+      'complete' => '已完成',
+      _ => '状态待同步',
+    };
+    final color = status == 'active'
+        ? const Color(0xff288d76)
+        : ['blocked', 'budgetLimited', 'usageLimited'].contains(status)
+        ? const Color(0xffa07842)
+        : muted;
+    final textScaler = MediaQuery.textScalerOf(context);
+    final height =
+        (textScaler.scale(13) * 1.3 + textScaler.scale(10) * 1.3 + 14)
+            .clamp(48.0, double.infinity)
+            .toDouble();
+    return SizedBox(
       key: const Key('goal-dock'),
-      margin: const EdgeInsets.symmetric(horizontal: 10),
-      padding: const EdgeInsets.fromLTRB(12, 5, 4, 6),
-      decoration: const BoxDecoration(
-        color: Color(0xffefeff1),
-        border: Border(
-          top: BorderSide(color: Color(0xffe4e4e8)),
-          left: BorderSide(color: Color(0xffe4e4e8)),
-          right: BorderSide(color: Color(0xffe4e4e8)),
-        ),
-        borderRadius: BorderRadius.vertical(top: Radius.circular(19)),
-      ),
-      child: Row(
+      width: double.infinity,
+      height: height,
+      child: Stack(
+        clipBehavior: Clip.none,
         children: [
-          const Icon(Icons.track_changes_outlined, size: 18, color: muted),
-          const SizedBox(width: 8),
-          Expanded(
-            child: InkWell(
-              onTap: () => showGoal(context, state),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 5),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      goalLabel(goal['status']),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    Text(
-                      '${goal['objective']}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 11, color: muted),
-                    ),
-                  ],
+          // Extend behind the composer's rounded top so the two surfaces
+          // meet without the square lower corners protruding at either side.
+          const Positioned(
+            left: 10,
+            right: 10,
+            top: 0,
+            bottom: -14,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: Color(0xfff4f4f6),
+                border: Border(
+                  top: BorderSide(color: Color(0xffe8e8ec)),
+                  left: BorderSide(color: Color(0xffe8e8ec)),
+                  right: BorderSide(color: Color(0xffe8e8ec)),
                 ),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
               ),
             ),
           ),
-          const SizedBox(width: 4),
-          Text(
-            durationLabel(goal['timeUsedSeconds'] as num?),
-            key: const Key('goal-duration'),
-            style: const TextStyle(
-              fontSize: 10,
-              color: muted,
-              fontFamily: 'monospace',
-            ),
-          ),
-          IconButton(
-            tooltip: '关闭目标',
-            onPressed: enabled ? () => confirmCloseGoal(context, state) : null,
-            visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints.tightFor(width: 33, height: 40),
-            icon: const Icon(Icons.delete_outline, size: 18),
-          ),
-          IconButton(
-            tooltip: goal['status'] == 'active' ? '暂停目标' : '继续目标',
-            onPressed: enabled
-                ? () => state.goalAction('PATCH', {
-                    'status': goal['status'] == 'active' ? 'paused' : 'active',
-                  })
-                : null,
-            visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints.tightFor(width: 33, height: 40),
-            icon: Icon(
-              goal['status'] == 'active'
-                  ? Icons.pause_circle_outline
-                  : Icons.play_circle_outline,
-              size: 19,
+          Material(
+            type: MaterialType.transparency,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(22, 0, 12, 0),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.track_changes_outlined,
+                    size: 16,
+                    color: muted,
+                  ),
+                  const SizedBox(width: 9),
+                  Expanded(
+                    child: Tooltip(
+                      message: '查看目标详情',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(8),
+                        onTap: () => showGoal(context, state),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 6),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '${goal['objective']}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  height: 1.3,
+                                  fontWeight: FontWeight.w500,
+                                  color: Color(0xff55555f),
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Row(
+                                children: [
+                                  Text(
+                                    label,
+                                    key: const Key('goal-status'),
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      height: 1.3,
+                                      color: color,
+                                    ),
+                                  ),
+                                  const Text(
+                                    '  ·  ',
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      height: 1.3,
+                                      color: muted,
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: Text(
+                                      durationLabel(
+                                        goal['timeUsedSeconds'] as num?,
+                                      ),
+                                      key: const Key('goal-duration'),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        height: 1.3,
+                                        color: muted,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 3),
+                  if (status != 'complete')
+                    IconButton(
+                      tooltip: status == 'active' ? '暂停目标' : '继续目标',
+                      onPressed: enabled
+                          ? () => state.goalAction('PATCH', {
+                              'status': status == 'active'
+                                  ? 'paused'
+                                  : 'active',
+                            })
+                          : null,
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 40,
+                        height: 44,
+                      ),
+                      icon: Icon(
+                        status == 'active'
+                            ? Icons.pause_circle_outline
+                            : Icons.play_circle_outline,
+                        size: 18,
+                        color: enabled ? muted : null,
+                      ),
+                    ),
+                  PopupMenuButton<String>(
+                    tooltip: '目标更多操作',
+                    icon: const Icon(Icons.more_horiz, size: 18, color: muted),
+                    constraints: const BoxConstraints(minWidth: 180),
+                    padding: const EdgeInsets.all(8),
+                    onOpened: () => onMenuChanged?.call(true),
+                    onCanceled: () => onMenuChanged?.call(false),
+                    onSelected: (value) {
+                      onMenuChanged?.call(false);
+                      if (value == 'close') {
+                        confirmCloseGoal(context, state);
+                      } else {
+                        showGoal(context, state, edit: value == 'edit');
+                      }
+                    },
+                    itemBuilder: (_) => [
+                      const PopupMenuItem(
+                        value: 'details',
+                        child: Text('目标详情'),
+                      ),
+                      PopupMenuItem(
+                        value: 'edit',
+                        enabled: enabled,
+                        child: const Text('修改目标'),
+                      ),
+                      const PopupMenuDivider(),
+                      PopupMenuItem(
+                        value: 'close',
+                        enabled: enabled,
+                        child: const Text(
+                          '关闭目标',
+                          style: TextStyle(color: Color(0xffac656a)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
         ],
@@ -673,19 +785,20 @@ Future<void> confirmCloseGoal(BuildContext context, Workspace state) async {
   if (ok == true) await state.goalAction('DELETE', {});
 }
 
-void showGoal(BuildContext context, Workspace state) {
+void showGoal(BuildContext context, Workspace state, {bool edit = false}) {
   showModalBottomSheet<void>(
     context: context,
     useSafeArea: true,
     isScrollControlled: true,
     showDragHandle: true,
-    builder: (_) => GoalSheet(state: state),
+    builder: (_) => GoalSheet(state: state, startEditing: edit),
   );
 }
 
 class GoalSheet extends StatefulWidget {
   final Workspace state;
-  const GoalSheet({super.key, required this.state});
+  final bool startEditing;
+  const GoalSheet({super.key, required this.state, this.startEditing = false});
   @override
   State<GoalSheet> createState() => _GoalSheetState();
 }
@@ -698,7 +811,7 @@ class _GoalSheetState extends State<GoalSheet> {
   void initState() {
     super.initState();
     reset();
-    editing = widget.state.goal == null;
+    editing = widget.startEditing || widget.state.goal == null;
   }
 
   void reset() {

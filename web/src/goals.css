@@ -1,18 +1,22 @@
 .composer-stack { max-width: 990px; margin: 0 auto; }
-.goal-dock { display: flex; align-items: center; gap: 8px; margin: 0 10px; padding: 8px 9px 8px 13px; background: #efeff1; border: 1px solid #e4e4e8; border-bottom: 0; border-radius: 19px 19px 0 0; color: #85858f; }
-.goal-dock > svg { flex-shrink: 0; }
-.goal-dock-main { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; background: transparent; text-align: left; padding: 3px 0; color: inherit; }
-.goal-dock-main strong { flex-shrink: 0; color: #484852; font-size: 12px; font-weight: 600; }
-.goal-dock-main > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; }
-.goal-dock-time { flex-shrink: 0; font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.goal-dock .icon-button { width: 32px; height: 32px; min-width: 32px; min-height: 32px; color: #888891; }
-@media(max-width:700px) {
-  .goal-dock { gap: 6px; padding: 6px 4px 6px 11px; }
-  .goal-dock-main { align-items: flex-start; flex-direction: column; gap: 2px; }
-  .goal-dock-main strong { font-size: 12px; }
-  .goal-dock-main > span { width: 100%; font-size: 11px; }
-  .goal-dock-time { font-size: 10px; }
-}
+.goal-dock { position: relative; z-index: 1; isolation: isolate; display: flex; align-items: center; gap: 7px; min-height: 48px; margin: 0 10px; padding: 0 2px 0 12px; color: #8b8c98; }
+.goal-dock::before { content: ''; position: absolute; z-index: -1; inset: 0 0 -14px; background: #f4f4f6; border: 1px solid #e8e8ec; border-bottom: 0; border-radius: 18px 18px 0 0; pointer-events: none; }
+.goal-dock-icon { flex-shrink: 0; }
+.goal-dock-main { display: flex; flex-direction: column; justify-content: center; align-items: flex-start; flex: 1; min-width: 0; gap: 2px; min-height: 44px; background: transparent; text-align: left; padding: 3px 0; border-radius: 8px; color: inherit; }
+.goal-dock-main strong { display: block; width: 100%; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #55555f; font-size: 13px; line-height: 1.3; font-weight: 500; }
+.goal-dock-caption { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; font-size: 10px; line-height: 1.3; white-space: nowrap; }
+.goal-dock-state { flex-shrink: 0; }
+.goal-dock.active .goal-dock-state { color: #288d76; }
+.goal-dock.blocked .goal-dock-state,.goal-dock.budgetLimited .goal-dock-state,.goal-dock.usageLimited .goal-dock-state { color: #a07842; }
+.goal-dock-time { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.goal-dock .icon-button { flex-shrink: 0; width: 36px; height: 44px; min-width: 36px; min-height: 44px; color: #8b8c98; border-radius: 10px; }
+.goal-dock-menu { position: relative; flex-shrink: 0; }
+.goal-dock-popover { position: absolute; right: -2px; bottom: calc(100% + 5px); z-index: 5; width: 174px; padding: 5px; border: 1px solid #e9e9ee; border-radius: 14px; background: #fff; box-shadow: 0 8px 26px #20202d16; }
+.goal-dock-popover>button { display: flex; justify-content: flex-start; gap: 9px; width: 100%; min-height: 42px; padding: 9px 11px; border-radius: 9px; font-size: 12px; color: #55555f; }
+.goal-dock-popover>button:hover { background: #f4f4f6; }
+.goal-dock-popover>button.goal-menu-close { color: #ac656a; }
+.goal-menu-divider { height: 1px; margin: 3px 7px; background: #eeeef2; }
+@media(min-width:701px) { .goal-dock-main { flex-direction: row; align-items: center; gap: 12px; } .goal-dock-caption { width: auto; flex-shrink: 0; } }
 .goal-modal { max-width: 520px; }
 .goal-state-label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #727581; }
 .goal-state-label.active { color: #168a6d; }

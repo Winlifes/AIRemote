@@ -446,4 +446,70 @@ void main() {
     await renderEvidence(tester, 'flutter-goal-editor');
     await tester.pumpWidget(const SizedBox.shrink());
   });
+  testWidgets(
+    'compact goal actions edit directly and require close confirmation',
+    (tester) async {
+      tester.view.physicalSize = const Size(320, 640);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final state = demoWorkspace();
+      final goal = (state.threads['a']!['goalState'] as Map)['goal'] as Map;
+      goal['status'] = 'paused';
+      goal['timeUsedSeconds'] = 1171212;
+      addTearDown(state.dispose);
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: const Key('qa-frame'),
+          child: AIRemoteApp(
+            workspace: state,
+            updater: null,
+            native: NativePlatform(),
+            connect: (_) async {},
+            changeServer: () {},
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('已暂停'), findsOneWidget);
+      expect(find.byTooltip('继续目标'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await renderEvidence(tester, 'goal-paused-small');
+      await tester.tap(find.byTooltip('目标更多操作'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await renderEvidence(tester, 'goal-more-actions');
+      await tester.tap(find.text('修改目标'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byType(GoalSheet), findsOneWidget);
+      expect(find.byType(TextField), findsNWidgets(3));
+      expect(find.text('保存修改'), findsOneWidget);
+      await tester.tap(find.byTooltip('关闭目标详情'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.byTooltip('目标更多操作'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.text('关闭目标'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('关闭这个目标？'), findsOneWidget);
+      expect(
+        (state.api as FakeApi).calls.where((call) => call.method != 'GET'),
+        isEmpty,
+      );
+      await tester.tap(find.text('保留目标'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(state.goal, equals(goal));
+      goal['status'] = 'complete';
+      state.changed();
+      await tester.pump();
+      expect(find.text('已完成'), findsOneWidget);
+      expect(find.byTooltip('继续目标'), findsNothing);
+      expect(find.byTooltip('暂停目标'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 }

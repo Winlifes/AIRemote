@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { LoaderCircle, Pause, Pencil, Play, Target, Trash2, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Ellipsis, ExternalLink, LoaderCircle, Pause, Pencil, Play, Target, Trash2, X } from 'lucide-react';
 import { GoalState, Receipt, goalPresentation } from './api';
 import './goals.css';
 
@@ -12,8 +12,19 @@ export function GoalControl({ state, open, close, show, online, busy, error, cha
   const [editing, setEditing] = useState(false);
   const [closing, setClosing] = useState(false);
   const [feedback, setFeedback] = useState('');
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menu = useRef<HTMLDivElement>(null), menuButton = useRef<HTMLButtonElement>(null);
   const enabled = !!state?.readable && state.writable && online && !busy;
-  const dismiss = () => { if (!busy) { setEditing(false); setClosing(false); setFeedback(''); close(); } };
+  const dismiss = () => { if (!busy) { setEditing(false); setClosing(false); setMenuOpen(false); setFeedback(''); close(); } };
+  useEffect(() => {
+    if (!menuOpen) return;
+    const outside = (event: PointerEvent) => { if (!menu.current?.contains(event.target as Node)) setMenuOpen(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); setMenuOpen(false); menuButton.current?.focus(); } };
+    document.addEventListener('pointerdown', outside);
+    document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); };
+  }, [menuOpen]);
+  const pick = (action: 'details' | 'edit' | 'close') => { setMenuOpen(false); setFeedback(''); setEditing(action === 'edit'); setClosing(action === 'close'); show(); };
   async function act(method: string, body: object) {
     setFeedback('');
     const result = await change(method, { ...body, revision: state?.revision });
@@ -25,12 +36,22 @@ export function GoalControl({ state, open, close, show, online, busy, error, cha
     setEditing(false); setClosing(false); return true;
   }
   return <>
-    {goal && labels && <div className={`goal-dock ${labels.active ? 'active' : ''}`}>
-      <Target size={17} />
-      <button className="goal-dock-main" onClick={show} aria-label={`查看对话目标，${labels.label}`}><strong>{labels.active ? '进行中的目标' : `${labels.label}的目标`}</strong><span>{goal.objective}</span></button>
-      <time className="goal-dock-time" title={`已处理 ${labels.time}`}>{elapsed(goal.timeUsedSeconds)}</time>
-      <button className="icon-button" aria-label="关闭目标" title="关闭目标" disabled={!enabled} onClick={() => { setClosing(true); show(); }}><Trash2 size={17} /></button>
+    {goal && labels && <div className={`goal-dock ${goal.status}`}>
+      <Target className="goal-dock-icon" size={16} aria-hidden="true" />
+      <button className="goal-dock-main" onClick={() => pick('details')} aria-label={`查看对话目标，${labels.label}，${goal.objective}`} title={goal.objective}>
+        <strong>{goal.objective}</strong>
+        <span className="goal-dock-caption"><span className="goal-dock-state">{labels.label}</span><span aria-hidden="true">·</span><time className="goal-dock-time" title={`已处理 ${labels.time}`}>{elapsed(goal.timeUsedSeconds)}</time></span>
+      </button>
       {goal.status !== 'complete' && <button className="icon-button" aria-label={labels.active ? '暂停目标' : '继续目标'} title={labels.active ? '暂停目标' : '继续目标'} disabled={!enabled} onClick={() => act('PATCH', { status: labels.active ? 'paused' : 'active' })}>{labels.active ? <Pause size={17} /> : <Play size={17} />}</button>}
+      <div className="goal-dock-menu" ref={menu} onBlurCapture={() => requestAnimationFrame(() => { if (!menu.current?.contains(document.activeElement)) setMenuOpen(false); })}>
+        <button ref={menuButton} type="button" className="icon-button" aria-label="目标更多操作" title="更多目标操作" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}><Ellipsis size={18} /></button>
+        {menuOpen && <div className="goal-dock-popover" role="group" aria-label="目标操作">
+          <button type="button" onClick={() => pick('details')}><ExternalLink size={15} />目标详情</button>
+          <button type="button" disabled={!enabled} onClick={() => pick('edit')}><Pencil size={15} />修改目标</button>
+          <div className="goal-menu-divider" />
+          <button type="button" className="goal-menu-close" disabled={!enabled} onClick={() => pick('close')}><Trash2 size={15} />关闭目标</button>
+        </div>}
+      </div>
     </div>}
     {open && <Modal title={goal ? '对话目标' : '设置对话目标'} close={dismiss} className="goal-modal">
       {error && <p className="error-text" role="alert">{error}</p>}
