@@ -19,12 +19,12 @@ export class ConversationReader {
   select(id: string) { if (id !== this.id) { this.id = id; this.generation++; } }
   invalidate() { this.generation++; }
   scope() { const id = this.id, generation = this.generation; return () => this.id === id && this.generation === generation; }
-  refresh(read: <T>(path: string) => Promise<T>, callbacks: Callbacks) {
+  refresh(read: <T>(path: string) => Promise<T>, callbacks: Callbacks, includeQueue = true) {
     const id = this.id, generation = this.generation;
     if (!id) return Promise.resolve();
     const current = () => this.id === id && this.generation === generation;
     const paths = { thread: '', messages: '/messages?limit=40', queue: '/queue' };
-    const tasks = (Object.keys(paths) as ReadSource[]).map(source => {
+    const tasks = (Object.keys(paths) as ReadSource[]).filter(source => includeQueue || source !== 'queue').map(source => {
       const key = `${generation}:${source}`;
       if (this.pending.has(key)) return this.pending.get(key)!;
       const task = Promise.resolve().then(() => read(`/api/threads/${id}${paths[source]}`)).then(value => {

@@ -23,6 +23,33 @@ const ink = Color(0xff252631),
     accent = Color(0xff675cf4),
     canvas = Color(0xfffafafa);
 
+class ProviderIcon extends StatelessWidget {
+  final String provider;
+  final double size;
+  const ProviderIcon(this.provider, this.size, {super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    if (provider == 'claude') {
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xfff7e9df),
+          borderRadius: BorderRadius.circular(size * .25),
+        ),
+        child: SizedBox.square(
+          dimension: size,
+          child: Icon(
+            Icons.code_rounded,
+            size: size * .7,
+            color: const Color(0xff995a3c),
+          ),
+        ),
+      );
+    }
+    return Image.asset('assets/$provider.png', width: size, height: size);
+  }
+}
+
 class AIRemoteApp extends StatelessWidget {
   final Workspace? workspace;
   final AppUpdater? updater;

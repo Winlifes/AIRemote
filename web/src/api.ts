@@ -2,16 +2,18 @@ export type Device = { online: boolean; connectorOnline: boolean; name?: string;
 declare global {
   interface Window { AIRemoteAndroid?: { download: (url: string, name: string, mime: string) => void; openSettings: () => void } }
 }
-export type ProviderId = 'codex' | 'deepseek';
-export type Provider = { id: ProviderId; name: string; clientName: string; installed: boolean; connected: boolean; readable: boolean; status: string; statusLabel: string; version?: string; features: string[]; helpUrl?: string };
+export type ProviderId = 'codex' | 'deepseek' | 'claude';
+export type Provider = { id: ProviderId; name: string; clientName: string; installed: boolean; connected: boolean; readable: boolean; status: string; statusLabel: string; version?: string; features: string[]; message?: string; helpUrl?: string };
 export const providerPath = (id: ProviderId, path: string) => id === 'codex' ? path : path.replace(/^\/api\//, `/api/providers/${id}/`);
-export type Project = { id: string; name: string; path: string; roots: string[] };
+export type Project = { id: string; name: string; path: string; roots: string[]; writable?: boolean };
 export type Thread = {
   threadId: string; title: string; cwd: string; runtimeStatus: string | { type: string; activeFlags?: string[] } | null;
   latestPersistedTurnStatus: string | null; runtimeSource?: string; projectId?: string;
   turns: { turn_id: string; status: string; started_at?: number | null; completed_at?: number | null }[];
   modelSettings?: ModelSettings | null;
   goalState?: GoalState;
+  writeAvailable?: boolean;
+  writeMessage?: string;
 };
 export type Goal = { threadId: string; objective: string; status: 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete'; tokenBudget: number | null; tokensUsed: number; timeUsedSeconds: number; createdAt: number; updatedAt: number };
 export type GoalState = { goal: Goal | null; readable: boolean; writable: boolean; revision: string | null; source: string; message: string };

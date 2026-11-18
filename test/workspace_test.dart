@@ -27,6 +27,60 @@ void main() {
     },
   );
   test(
+    'Claude reads scoped history without a queue and respects native write availability',
+    () async {
+      final api = FakeApi();
+      final state = Workspace(api);
+      addTearDown(state.dispose);
+      const root = '/api/providers/claude';
+      var writable = false;
+      api.respond = (call) {
+        if (call.path == '/api/providers') {
+          return {
+            'providers': [
+              ...FakeApi.defaultResponse(call)['providers'] as List,
+              {
+                'id': 'claude',
+                'readable': true,
+                'connected': true,
+                'features': ['send', 'create'],
+              },
+            ],
+          };
+        }
+        if (call.path == '$root/threads/a') {
+          return {...thread('a', status: 'idle'), 'writeAvailable': writable};
+        }
+        if (call.path == '$root/threads/a/messages' && call.method == 'POST' ||
+            call.path == '$root/operations/native-claude-operation') {
+          return {
+            'operationId': 'native-claude-operation',
+            'requestStatus': 'in_flight',
+            'result': {'threadId': 'a', 'executionState': 'starting'},
+          };
+        }
+        return FakeApi.defaultResponse(call);
+      };
+      await state.start();
+      await state.switchProvider('claude');
+      await state.loadProject('p');
+      await state.select('a');
+      expect(state.online, isTrue);
+      expect(state.messages.last['itemId'], 'm79');
+      expect(state.canWrite, isFalse);
+      state.setDraft('继续');
+      expect(await state.send(), isFalse);
+      expect(state.draft, '继续');
+      writable = true;
+      await state.refreshChat();
+      expect(await state.send(), isTrue);
+      expect(state.receipt['requestStatus'], 'in_flight');
+      final writes = api.calls.where((call) => call.method == 'POST');
+      expect(writes.single.path, '$root/threads/a/messages');
+      expect(api.calls.where((call) => call.path.endsWith('/queue')), isEmpty);
+    },
+  );
+  test(
     'slow queue does not hold back messages; A B A discards stale replies',
     () async {
       final api = FakeApi();

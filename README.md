@@ -10,12 +10,13 @@
 - 原生项目层级，展开项目才读取列表；打开聊天才读取最新消息，上翻才读取更早历史。
 - 原生队列添加、编辑、删除、排序、清空和立即执行，以及新建真实对话。
 - DeepSeek Harness 现有 Host 的项目、聊天、续聊、文件、新建和队列；其当前版本没有排序接口。
+- Claude Code 本地项目、已有会话、运行状态、历史分页及关联文件。配置 CLI 的 API 凭据后，可继续原会话或新建。
 - 手机抽屉侧栏、胶囊输入框、Markdown、用户消息右对齐和真实处理时间。
 - 侧栏与全屏遮罩同时过渡；当前 Codex 模型、思考强度、工作/计划模式及权限从原桌面 owner 实时读取。
 - Mac 应用启动/停止连接器；Android 支持系统文件下载和 GitHub Releases 更新。
 - Codex 对话目标：查看状态、目标消耗与预算，创建/修改、暂停/继续及关闭；在原桌面 app-server 上写入并回读确认。
 
-CodeBuddy / Claude、多台 Mac、图片和音频指令、手机处理 AI 审批仍待扩展。
+CodeBuddy、多台 Mac、图片和音频指令、手机处理 AI 审批仍待扩展。
 
 ## 架构
 
@@ -24,10 +25,10 @@ Android / 手机浏览器 --HTTPS--> 自托管 relay <--HTTPS 主动轮询-- Mac
                                                                   |
                                                           loopback connector
                                                                   |
-                                             原 Codex owner / DeepSeek Host
+                                     Codex owner / DeepSeek Host / Claude Code CLI
 ```
 
-Mac 不需要公网 IP 或入站端口。已有聊天交给原桌面 owner 执行，不另开 SDK 聊天冒充接管。
+Mac 主动连接中继。Codex 和 DeepSeek 由原桌面进程执行。Claude Code 使用原会话 ID 从 CLI 续聊。
 
 ## 部署中继
 
@@ -75,6 +76,17 @@ Mac 安装包同时支持 Apple Silicon / Intel、macOS 13+，携带连接器代
 使用自定义配置目录时，新版本首次打开会让你选择一次原配置文件夹。选择原目录后继续启动；取消可稍后重选，界面不会无限等待目录授权。GitHub 下载遇到临时网络故障会有界限地重试，校验失败始终停止更新。
 
 DeepSeek 使用 `deploy/install_deepseek.py` 注册本机 companion，仅将当前桌面 Host 的正常认证入口写入私有文件，不上传登录 token/cookie。
+
+### Claude Code
+
+在网页或 Flutter 应用的侧栏点击 Claude 图标。可读取授权目录下的本地 Claude Code 会话。开启 `--discover-desktop-projects` 后，也会显示 Claude Desktop 的 Code 页中的本地会话。会话历史按需翻页，运行状态来自 `claude agents --json`。文件下载限于会话回复明确链接的授权文件。
+
+续聊和新建需要 Mac 上的官方 Claude Code CLI，可使用独立安装或 Claude Desktop 自带的版本。给 CLI 配置自己的 API 凭据，例如从已设置 `ANTHROPIC_API_KEY` 的本机终端启动连接器。桌面仍打开同一会话时可查看消息和状态；关闭会话后，可从手机在已授权的工作目录中按原会话 ID 继续。新建会话需填写第一条指令。回执确认真实写入的消息和回复后才显示完成。
+
+本版覆盖 Claude Code 本地会话。Claude Chat、Cowork、云端会话和原生队列待适配。
+
+- [Claude Code Desktop](https://code.claude.com/docs/en/desktop)
+- [Claude Code CLI 认证说明](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)
 
 ### Codex 对话目标
 

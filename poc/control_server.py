@@ -20,6 +20,7 @@ from http.server import ThreadingHTTPServer
 from urllib.parse import quote, urlsplit, parse_qs
 
 from app_server_rpc import AppServerRPC, NativeQueue, RPCError
+from claude_adapter import ClaudeAdapter, ClaudeError
 from codex_probe import History, ProbeHandler
 from desktop_ipc import DesktopError, DesktopIPC, TESTED_DESKTOP_VERSIONS
 from deepseek_adapter import DeepSeekAdapter, DeepSeekError
@@ -139,6 +140,8 @@ class Controller:
         self.journal = Journal(state_directory)
         self.deepseek = DeepSeekAdapter(state_directory.parent / 'deepseek-connection.json',
             Journal(state_directory / 'providers/deepseek'), self.artifact_roots)
+        self.claude = ClaudeAdapter(Journal(state_directory / 'providers/claude'),
+            self.artifact_roots, self.workspace_roots, discover_desktop=discover_desktop_projects)
         self.desktop_factory = desktop_factory
         self.goal_client = goal_client or GoalOwnerClient()
         # A new desktop version can still serve read-only snapshots. Keep the
@@ -155,6 +158,7 @@ class Controller:
         self.recoverable_created = {r["id"] for r in self.journal.created()}
 
     def close(self):
+        self.claude.close()
         if self.owns_rpc:
             self.rpc.close()
         if not self.instance_lock.closed:
@@ -441,7 +445,7 @@ class ControlHandler(ProbeHandler):
             status = 403
         elif isinstance(error, LookupError):
             status = 404
-        elif isinstance(error, (Conflict, GoalUnavailable)):
+        elif isinstance(error, (Conflict, GoalUnavailable, ClaudeError)):
             status = 409
         elif isinstance(error, (DesktopError, RPCError, DeepSeekError, GoalRPCError, ConnectionError, TimeoutError, OSError)):
             status = 503
@@ -478,9 +482,11 @@ class ControlHandler(ProbeHandler):
                      'status': 'connected' if codex_online else 'unavailable',
                      'statusLabel': ('已连接' if codex_write else '已连接 · 写入版本待验证') if codex_online else '客户端未连接，历史可读',
                      'features': ['projects', 'messages', 'runtime-status', 'artifacts', 'queue', 'goals'] + (['send', 'create', 'queue-edit', 'queue-delete', 'queue-send', 'queue-reorder'] if codex_write else [])},
-                    controller.deepseek.descriptor()]})
+                    controller.deepseek.descriptor(), controller.claude.descriptor()]})
             elif path.startswith('/api/providers/deepseek/'):
-                return self.deepseek_get(path[len('/api/providers/deepseek'):])
+                return self.provider_get(controller.deepseek, path.removeprefix('/api/providers/deepseek'), 'session-')
+            elif path.startswith('/api/providers/claude/'):
+                return self.provider_get(controller.claude, path.removeprefix('/api/providers/claude'), '')
             elif path == "/api/capabilities":
                 workspaces = [str(p) for p in controller.workspace_roots]
                 if controller.discover_desktop_projects:
@@ -533,8 +539,7 @@ class ControlHandler(ProbeHandler):
         except Exception as error:
             self.failure(error)
 
-    def deepseek_get(self, path):
-        adapter = self.server.controller.deepseek
+    def provider_get(self, adapter, path, prefix):
         if path == '/projects':
             return self.respond(200, {'projects': adapter.projects()})
         match = re.fullmatch(r'/projects/(' + THREAD_PATTERN + r')/threads', path)
@@ -543,15 +548,18 @@ class ControlHandler(ProbeHandler):
         match = re.fullmatch(r'/operations/(' + THREAD_PATTERN + ')', path)
         if match:
             return self.respond(200, adapter.receipt(adapter.journal.get(match.group(1))))
-        match = re.fullmatch(r'/threads/(session-' + THREAD_PATTERN + r')(?:/(messages|queue|artifacts)(?:/([0-9a-f]{24})/download)?)?', path)
-        if not match:
-            return self.respond(404, {'error': 'Unknown DeepSeek endpoint'})
-        tid, resource, artifact_id = match.groups()
-        if artifact_id:
+        resources = 'messages|artifacts|queue' if prefix else 'messages|artifacts'
+        match = re.fullmatch(r'/threads/(' + prefix + THREAD_PATTERN + r')(?:/(' + resources + r'))?', path)
+        download = re.fullmatch(r'/threads/(' + prefix + THREAD_PATTERN + r')/artifacts/([0-9a-f]{24})/download', path)
+        if download:
+            tid, artifact_id = download.groups()
             item, content = adapter.read_artifact(tid, artifact_id)
             return self.respond(200, content, mimetypes.guess_type(item['name'])[0] or 'application/octet-stream', {
                 'Content-Disposition': "attachment; filename*=UTF-8''" + quote(item['name'], safe=''),
                 'ETag': '"' + hashlib.sha256(content).hexdigest() + '"'})
+        if not match:
+            return self.respond(404, {'error': 'Unknown provider endpoint'})
+        tid, resource = match.groups()
         if resource == 'messages':
             query = parse_qs(urlsplit(self.path).query)
             return self.respond(200, adapter.message_page(tid, int(query.get('limit', [40])[0]), query.get('before', [None])[0]))
@@ -590,6 +598,15 @@ class ControlHandler(ProbeHandler):
         path = urlsplit(self.path).path
         try:
             body = self.body()
+            if path.startswith('/api/providers/claude/'):
+                local = path.removeprefix('/api/providers/claude')
+                tid = re.fullmatch(r'/threads/(' + THREAD_PATTERN + r')/messages', local)
+                if self.command != 'POST' or not (local == '/threads' or tid):
+                    return self.respond(404, {'error': 'Unknown Claude Code write endpoint'})
+                kind = 'send' if tid else 'create'
+                payload = {**body, 'threadId': tid.group(1)} if tid else body
+                result = self.server.controller.claude.perform(self.headers.get('Idempotency-Key'), kind, payload)
+                return self.respond(202 if result['requestStatus'] in {'in_flight', 'outcome_unknown'} else 200, result)
             if path.startswith('/api/providers/deepseek/'):
                 return self.deepseek_mutate(path[len('/api/providers/deepseek'):], body)
             if path == "/api/threads" and self.command == "POST":
@@ -642,7 +659,7 @@ def main():
     parser.add_argument("--state-dir", default=str(Path(__file__).resolve().parents[1] / ".local"))
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--token-file")
-    parser.add_argument('--discover-desktop-projects', action='store_true', help='Use the Mac Codex project catalog for chat access')
+    parser.add_argument('--discover-desktop-projects', action='store_true', help='Discover local projects from desktop clients')
     args = parser.parse_args()
     if not args.thread and not args.discover_desktop_projects:
         parser.error('Provide --thread or explicitly enable --discover-desktop-projects')

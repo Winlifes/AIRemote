@@ -6,6 +6,8 @@ UUID = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
 THREAD = r"/api/threads/" + UUID
 DS = r'/api/providers/deepseek'
 DS_THREAD = DS + r'/threads/session-' + UUID
+CLAUDE = r'/api/providers/claude'
+CLAUDE_THREAD = CLAUDE + r'/threads/' + UUID
 MAX_BODY = 256 * 1024
 MAX_RESULT = 64 * 1024 * 1024
 
@@ -21,9 +23,12 @@ def validate_request(value):
         raise ValueError("Only fixed local connector paths are allowed")
     routes = {
         "GET": [r'/api/providers', DS + r'/projects', DS + r'/projects/' + UUID + r'/threads', DS_THREAD, DS_THREAD + r'/(messages|queue|artifacts)', DS_THREAD + r'/artifacts/[0-9a-f]{24}/download', DS + r'/operations/' + UUID,
+                CLAUDE + r'/projects', CLAUDE + r'/projects/' + UUID + r'/threads',
+                CLAUDE_THREAD, CLAUDE_THREAD + r'/(messages|artifacts)', CLAUDE_THREAD + r'/artifacts/[0-9a-f]{24}/download', CLAUDE + r'/operations/' + UUID,
                 r"/api/capabilities", r"/api/projects", r"/api/projects/" + UUID + r"/threads", r"/api/threads", THREAD, THREAD + r"/(messages|queue|artifacts|goal)",
                 THREAD + r"/artifacts/[0-9a-f]{24}/download", r"/api/operations/" + UUID],
         "POST": [DS + r'/threads', DS_THREAD + r'/(messages|queue)', DS_THREAD + r'/queue/(?:msg-)?' + UUID + r'/send',
+                 CLAUDE + r'/threads', CLAUDE_THREAD + r'/messages',
                  r"/api/threads", THREAD + r"/(messages|queue|goal)", THREAD + r"/queue/" + UUID + r"/send"],
         "PATCH": [DS_THREAD + r'/queue/(?:msg-)?' + UUID, THREAD + r"/queue/" + UUID, THREAD + r'/goal'],
         "PUT": [THREAD + r"/queue/order"],

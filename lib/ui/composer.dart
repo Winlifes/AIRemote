@@ -92,12 +92,22 @@ class _ComposerDockState extends State<ComposerDock> {
     };
     final result = state.receipt['result'] as Map?;
     final delivery = state.receipt['delivery'] as Map?;
-    final deliveryText = delivery?['turnStatus'] == 'completed'
+    final writeMessage = state.provider == 'claude'
+        ? (state.chat?['writeMessage'])?.toString()
+        : null;
+    final deliveryText = state.receipt['requestStatus'] == 'failed'
+        ? ((result?['error'])?.toString() ?? '指令未执行')
+        : state.receipt['requestStatus'] == 'outcome_unknown'
+        ? '执行结果待核对，请先查看当前对话'
+        : delivery?['turnStatus'] == 'completed'
         ? '这一轮已完成 · 已核对桌面对话'
         : delivery?['receivedInHistory'] == true
         ? '同一对话已收到 · 等待后续回复'
         : result?['deliveryState'] == 'queued'
         ? '已保存到原生队列 · 等待执行'
+        : state.provider == 'claude' &&
+              state.receipt['requestStatus'] == 'in_flight'
+        ? 'Claude Code 正在处理，等待会话回执'
         : state.receipt['operationId'] != null &&
               [
                 'send',
@@ -106,7 +116,7 @@ class _ComposerDockState extends State<ComposerDock> {
                 'create',
               ].contains(state.receipt['kind'])
         ? 'Mac 已受理 · 正在核对原对话'
-        : null;
+        : writeMessage;
     return AnimatedPadding(
       duration: duration,
       curve: Curves.easeOutCubic,
@@ -140,7 +150,7 @@ class _ComposerDockState extends State<ComposerDock> {
                   ],
                 ),
               ),
-            if (deliveryText != null)
+            if (deliveryText != null && deliveryText.isNotEmpty)
               Align(
                 alignment: Alignment.centerLeft,
                 child: Padding(
@@ -268,42 +278,50 @@ class _ComposerDockState extends State<ComposerDock> {
             ),
             Positioned(left: 4, bottom: 4, child: _actions(context)),
             Positioned(right: 4, bottom: 4, child: _send(state)),
-            Positioned(
-              right: 53,
-              bottom: 4,
-              child: ExcludeFocus(
-                excluding: progress < .95,
-                child: IgnorePointer(
-                  ignoring: progress < .95,
-                  child: ExcludeSemantics(
-                    excluding: progress < .95,
-                    child: Opacity(
-                      opacity: progress,
-                      child: PopupMenuButton<String>(
-                        tooltip: '指令发送方式',
-                        initialValue: state.sendMode,
-                        onOpened: () => _menu(true),
-                        onCanceled: () => _menu(false),
-                        onSelected: (value) {
-                          _menu(false);
-                          state.sendMode = value;
-                          state.changed();
-                          focus.requestFocus();
-                        },
-                        itemBuilder: (_) => const [
-                          PopupMenuItem(value: 'send', child: Text('立即发送')),
-                          PopupMenuItem(value: 'queue', child: Text('加入原生队列')),
-                        ],
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 9,
-                            vertical: 12,
-                          ),
-                          child: Text(
-                            state.sendMode == 'queue'
-                                ? '加入队列'
-                                : state.providerName,
-                            style: const TextStyle(fontSize: 12, color: muted),
+            if (state.supportsQueue)
+              Positioned(
+                right: 53,
+                bottom: 4,
+                child: ExcludeFocus(
+                  excluding: progress < .95,
+                  child: IgnorePointer(
+                    ignoring: progress < .95,
+                    child: ExcludeSemantics(
+                      excluding: progress < .95,
+                      child: Opacity(
+                        opacity: progress,
+                        child: PopupMenuButton<String>(
+                          tooltip: '指令发送方式',
+                          initialValue: state.sendMode,
+                          onOpened: () => _menu(true),
+                          onCanceled: () => _menu(false),
+                          onSelected: (value) {
+                            _menu(false);
+                            state.sendMode = value;
+                            state.changed();
+                            focus.requestFocus();
+                          },
+                          itemBuilder: (_) => const [
+                            PopupMenuItem(value: 'send', child: Text('立即发送')),
+                            PopupMenuItem(
+                              value: 'queue',
+                              child: Text('加入原生队列'),
+                            ),
+                          ],
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 9,
+                              vertical: 12,
+                            ),
+                            child: Text(
+                              state.sendMode == 'queue'
+                                  ? '加入队列'
+                                  : state.providerName,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: muted,
+                              ),
+                            ),
                           ),
                         ),
                       ),
@@ -311,7 +329,6 @@ class _ComposerDockState extends State<ComposerDock> {
                   ),
                 ),
               ),
-            ),
           ],
         ),
       ),
@@ -367,23 +384,25 @@ class _ComposerDockState extends State<ComposerDock> {
       }
     },
     itemBuilder: (_) => [
-      const PopupMenuItem(
-        value: 'send',
-        child: ListTile(
-          dense: true,
-          leading: Icon(Icons.arrow_upward, size: 20),
-          title: Text('立即发送'),
+      if (widget.state.supportsQueue)
+        const PopupMenuItem(
+          value: 'send',
+          child: ListTile(
+            dense: true,
+            leading: Icon(Icons.arrow_upward, size: 20),
+            title: Text('立即发送'),
+          ),
         ),
-      ),
-      const PopupMenuItem(
-        value: 'queue',
-        child: ListTile(
-          dense: true,
-          leading: Icon(Icons.playlist_add, size: 20),
-          title: Text('加入原生队列'),
+      if (widget.state.supportsQueue)
+        const PopupMenuItem(
+          value: 'queue',
+          child: ListTile(
+            dense: true,
+            leading: Icon(Icons.playlist_add, size: 20),
+            title: Text('加入原生队列'),
+          ),
         ),
-      ),
-      const PopupMenuDivider(),
+      if (widget.state.supportsQueue) const PopupMenuDivider(),
       const PopupMenuItem(
         value: 'files',
         child: ListTile(
@@ -394,7 +413,7 @@ class _ComposerDockState extends State<ComposerDock> {
       ),
       PopupMenuItem(
         value: 'new',
-        enabled: widget.state.canWrite,
+        enabled: widget.state.canCreate,
         child: const ListTile(
           dense: true,
           leading: Icon(Icons.add_comment_outlined, size: 20),
@@ -1059,9 +1078,7 @@ class _NewChatSheetState extends State<NewChatSheet> {
   @override
   void initState() {
     super.initState();
-    cwd = widget.state.projects
-        .expand((v) => (v['roots'] as List? ?? []).cast<String>())
-        .firstOrNull;
+    cwd = widget.state.createPaths.firstOrNull;
   }
 
   @override
@@ -1075,10 +1092,8 @@ class _NewChatSheetState extends State<NewChatSheet> {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: widget.state,
     builder: (_, _) {
-      final paths = widget.state.projects
-          .expand((v) => (v['roots'] as List? ?? []).cast<String>())
-          .toSet()
-          .toList();
+      final paths = widget.state.createPaths;
+      final requiresMessage = widget.state.provider == 'claude';
       return SafeArea(
         top: false,
         child: SingleChildScrollView(
@@ -1127,7 +1142,10 @@ class _NewChatSheetState extends State<NewChatSheet> {
                 controller: message,
                 minLines: 3,
                 maxLines: 7,
-                decoration: const InputDecoration(labelText: '第一条指令（可选）'),
+                onChanged: requiresMessage ? (_) => setState(() {}) : null,
+                decoration: InputDecoration(
+                  labelText: requiresMessage ? '第一条指令' : '第一条指令（可选）',
+                ),
               ),
               if (widget.state.error.isNotEmpty)
                 Padding(
@@ -1141,7 +1159,10 @@ class _NewChatSheetState extends State<NewChatSheet> {
               Align(
                 alignment: Alignment.centerRight,
                 child: FilledButton(
-                  onPressed: submitting || cwd == null
+                  onPressed:
+                      submitting ||
+                          !paths.contains(cwd) ||
+                          requiresMessage && message.text.trim().isEmpty
                       ? null
                       : () async {
                           setState(() {

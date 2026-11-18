@@ -278,6 +278,11 @@ struct ControlView: View {
                     HStack(spacing: 9) {
                         if let url = Bundle.main.url(forResource: client.id, withExtension: "png"), let icon = NSImage(contentsOf: url) {
                             Image(nsImage: icon).resizable().scaledToFit().frame(width: 23, height: 23)
+                        } else if client.id == "claude" {
+                            Image(systemName: "chevron.left.forwardslash.chevron.right")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.orange)
+                                .frame(width: 23, height: 23)
                         }
                         Text(client.name).font(.system(size: 13))
                         Spacer()

@@ -3,6 +3,12 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'api.dart';
 
+const providerNames = {
+  'codex': 'Codex',
+  'deepseek': 'DeepSeek',
+  'claude': 'Claude',
+};
+
 String providerPath(String provider, String path) =>
     provider == 'codex' ? path : '/api/providers/$provider${path.substring(4)}';
 String queueText(Json item) =>
@@ -144,17 +150,32 @@ class Workspace extends ChangeNotifier {
       device['online'] == true &&
       device['connectorOnline'] == true &&
       descriptor['readable'] == true;
+  bool get _canOperate => online && descriptor['connected'] == true && !busy;
+  bool supports(String feature) =>
+      (descriptor['features'] as List? ?? []).contains(feature);
+  bool get supportsQueue => provider != 'claude';
   bool get canWrite =>
-      online &&
-      descriptor['connected'] == true &&
-      !busy &&
-      (descriptor['features'] as List? ?? []).contains('send');
+      _canOperate &&
+      supports('send') &&
+      (provider != 'claude' ||
+          chat?['writeAvailable'] == true &&
+              receipt['requestStatus'] != 'in_flight');
+  bool get canCreate =>
+      _canOperate &&
+      (provider == 'claude' ? supports('create') : supports('send'));
+  List<String> get createPaths => projects
+      .where((project) => provider != 'claude' || project['writable'] == true)
+      .expand(
+        (project) => (project['roots'] as List? ?? []).whereType<String>(),
+      )
+      .toSet()
+      .toList();
   bool get hasLiveStatus =>
       online &&
       descriptor['connected'] == true &&
       !laneErrors.containsKey('thread');
   bool get isRunning => hasLiveStatus && runtimeType(chat) == 'active';
-  String get providerName => provider == 'codex' ? 'Codex' : 'DeepSeek';
+  String get providerName => providerNames[provider] ?? provider;
   String get draftKey => '$provider/$selected';
   String get draft => drafts[draftKey] ?? '';
   void setDraft(String value) {
@@ -346,6 +367,7 @@ class Workspace extends ChangeNotifier {
     loadingOlder = false;
     error = '';
     notice = '';
+    sendMode = 'send';
     laneErrors.clear();
     changed();
     await loadProjects();
@@ -365,13 +387,13 @@ class Workspace extends ChangeNotifier {
     }
   }
 
-  Future<void> select(String id) async {
+  Future<void> select(String id, {Json? startedOperation}) async {
     _generation++;
     selected = id;
     drawerOpen = false;
     messages = [];
     queue = [];
-    receipt = {};
+    receipt = startedOperation ?? {};
     hasOlder = false;
     olderCursor = null;
     loadingOlder = false;
@@ -392,12 +414,17 @@ class Workspace extends ChangeNotifier {
     final paths = {
       'thread': '',
       'messages': '/messages?limit=40',
-      'queue': '/queue',
+      if (supportsQueue) 'queue': '/queue',
     };
     final operation = receipt['operationId'];
     if (operation is String &&
         receipt['result']?['threadId'] == id &&
-        receipt['delivery']?['turnStatus'] != 'completed') {
+        ![
+          'completed',
+          'failed',
+          'interrupted',
+        ].contains(receipt['delivery']?['turnStatus']) &&
+        !['failed', 'outcome_unknown'].contains(receipt['requestStatus'])) {
       paths['receipt'] = '/api/operations/$operation';
     }
     await Future.wait(
@@ -531,21 +558,29 @@ class Workspace extends ChangeNotifier {
 
   Future<Json?> mutate(String path, String method, Json body) async {
     if (busy) return null;
-    final scope = _generation;
+    final scope = _generation, chosen = provider;
     busy = true;
     error = '';
     changed();
-    final fingerprint = jsonEncode([provider, path, method, body]);
+    final fingerprint = jsonEncode([chosen, path, method, body]);
     final key = _uncertainWrites.putIfAbsent(fingerprint, requestKey);
     try {
       final value = await api.bridge(
-        providerPath(provider, path),
+        providerPath(chosen, path),
         method: method,
         body: body,
         key: key,
       );
-      if (['in_flight', 'outcome_unknown'].contains(value['requestStatus'])) {
+      final startingClaude =
+          chosen == 'claude' &&
+          value['requestStatus'] == 'in_flight' &&
+          value['result']?['executionState'] == 'starting';
+      if (!startingClaude &&
+          ['in_flight', 'outcome_unknown'].contains(value['requestStatus'])) {
         throw const ApiError('操作结果暂不确定，请刷新核对后再操作', 409, true);
+      }
+      if (value['requestStatus'] == 'failed') {
+        throw ApiError(value['result']?['error']?.toString() ?? '指令未执行', 409);
       }
       _uncertainWrites.remove(fingerprint);
       if (scope == _generation) receipt = value;
@@ -568,7 +603,7 @@ class Workspace extends ChangeNotifier {
     final key = draftKey,
         id = selected,
         generation = _generation,
-        mode = sendMode;
+        mode = supportsQueue ? sendMode : 'send';
     final value = await mutate(
       '/api/threads/$id/${mode == 'queue' ? 'queue' : 'messages'}',
       'POST',
@@ -577,7 +612,9 @@ class Workspace extends ChangeNotifier {
     if (value == null) return false;
     if (drafts[key] == text) drafts[key] = '';
     if (generation == _generation) {
-      notice = mode == 'queue' ? '已加入原生队列' : 'Mac 已受理，正在回读对话';
+      if (provider != 'claude') {
+        notice = mode == 'queue' ? '已加入原生队列' : 'Mac 已受理，正在回读对话';
+      }
       followLatest = true;
       unawaited(refreshChat());
     }
@@ -660,6 +697,9 @@ class Workspace extends ChangeNotifier {
     ),
   );
   Future<bool> createChat(String cwd, String title, String text) async {
+    if (!canCreate || (provider == 'claude' && text.trim().isEmpty)) {
+      return false;
+    }
     final generation = _generation;
     final value = await mutate('/api/threads', 'POST', {
       'cwd': cwd,
@@ -669,7 +709,7 @@ class Workspace extends ChangeNotifier {
     final id = value?['result']?['threadId'];
     if (id is! String) return false;
     if (generation != _generation) return true;
-    await select(id);
+    await select(id, startedOperation: provider == 'claude' ? value : null);
     for (final project in expandedProjects.toList()) {
       loadProject(project);
     }

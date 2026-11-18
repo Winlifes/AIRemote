@@ -24,6 +24,24 @@ class ProviderProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.request('POST','/api/threads/'+SESSION+'/messages')
         with self.assertRaises(ValueError):self.request('POST','/api/providers/deepseek/threads/'+SESSION.replace('session-','')+'/messages')
 
+    def test_claude_routes_allow_history_and_same_session_writes(self):
+        tid = SESSION.removeprefix('session-')
+        root = '/api/providers/claude'
+        thread = f'{root}/threads/{tid}'
+        for method, path in [
+            ('GET', f'{root}/projects/{tid}/threads'),
+            ('GET', f'{thread}/messages?limit=40&before=abcdef-123'),
+            ('GET', f'{thread}/artifacts/{"f" * 24}/download'),
+            ('GET', f'{root}/operations/{tid}'),
+            ('POST', f'{root}/threads'),
+            ('POST', f'{thread}/messages'),
+        ]:
+            self.assertEqual(self.request(method, path)['path'], path)
+        for method, path in [('GET', f'{thread}/queue'), ('POST', f'{thread}/goal'),
+                             ('POST', f'{root}/threads/{SESSION}/messages'), ('GET', f'{root}/auth')]:
+            with self.assertRaises(ValueError):
+                self.request(method, path)
+
     def test_provider_does_not_enable_arbitrary_native_api_or_file_access(self):
         for path in ['/api/providers/deepseek/api/session/prompt','/api/providers/deepseek/files/etc/passwd','/api/providers/deepseek/auth','/api/providers/codebuddy/projects']:
             with self.assertRaises(ValueError):self.request('GET',path)

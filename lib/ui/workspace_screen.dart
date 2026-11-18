@@ -96,11 +96,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
                                 children: [
                                   Row(
                                     children: [
-                                      Image.asset(
-                                        'assets/${state.provider}.png',
-                                        width: 13,
-                                        height: 13,
-                                      ),
+                                      ProviderIcon(state.provider, 13),
                                       const SizedBox(width: 5),
                                       Text(
                                         state.providerName,
@@ -266,7 +262,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
                                       child: const Text('选择一个对话'),
                                     ),
                                     TextButton(
-                                      onPressed: state.canWrite
+                                      onPressed: state.canCreate
                                           ? () => showNewChat(context, state)
                                           : null,
                                       child: const Text('新建对话'),
@@ -478,12 +474,11 @@ class _ProjectDrawerState extends State<ProjectDrawer> {
             padding: const EdgeInsets.fromLTRB(20, 8, 15, 12),
             child: Row(
               children: [
-                for (final provider in ['codex', 'deepseek'])
+                for (final provider in providerNames.keys)
                   Padding(
                     padding: const EdgeInsets.only(right: 9),
                     child: Semantics(
-                      label:
-                          '切换到 ${provider == 'codex' ? 'Codex' : 'DeepSeek'}',
+                      label: '切换到 ${providerNames[provider]}',
                       selected: state.provider == provider,
                       child: InkWell(
                         borderRadius: BorderRadius.circular(13),
@@ -495,7 +490,15 @@ class _ProjectDrawerState extends State<ProjectDrawer> {
                               builder: (c) => AlertDialog(
                                 title: Text(state.providerName),
                                 content: Text(
-                                  '${state.device['online'] == true ? item['statusLabel'] ?? '检查中' : 'Mac 离线'}${item['version'] == null ? '' : '\n${item['version']}'}',
+                                  [
+                                    state.device['online'] == true
+                                        ? item['statusLabel'] ?? '检查中'
+                                        : 'Mac 离线',
+                                    if (item['version'] != null)
+                                      item['version'],
+                                    if (item['message'] != null)
+                                      item['message'],
+                                  ].join('\n'),
                                 ),
                                 actions: [
                                   TextButton(
@@ -521,11 +524,7 @@ class _ProjectDrawerState extends State<ProjectDrawer> {
                           child: Stack(
                             alignment: Alignment.center,
                             children: [
-                              Image.asset(
-                                'assets/$provider.png',
-                                width: 26,
-                                height: 26,
-                              ),
+                              ProviderIcon(provider, 26),
                               Positioned(
                                 right: 4,
                                 bottom: 4,
@@ -567,7 +566,7 @@ class _ProjectDrawerState extends State<ProjectDrawer> {
                 const Spacer(),
                 IconButton(
                   tooltip: '新建对话',
-                  onPressed: state.canWrite ? widget.newChat : null,
+                  onPressed: state.canCreate ? widget.newChat : null,
                   icon: const Icon(Icons.add, size: 24),
                 ),
               ],
