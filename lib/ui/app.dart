@@ -7,6 +7,7 @@ import '../core/platform.dart';
 import '../core/updates.dart';
 import '../core/workspace.dart';
 import 'account_screen.dart';
+import 'update_prompt.dart';
 import 'workspace_screen.dart';
 
 const edgeStyle = SystemUiOverlayStyle(
@@ -81,39 +82,42 @@ class AIRemoteApp extends StatelessWidget {
         bodyMedium: TextStyle(fontSize: 15, color: ink, height: 1.6),
       ),
     ),
-    home: AnnotatedRegion<SystemUiOverlayStyle>(
-      value: edgeStyle,
-      child: Builder(
-        builder: (context) {
-          if (starting) {
-            return const Scaffold(
-              body: Center(child: CircularProgressIndicator()),
-            );
-          }
-          final state = workspace;
-          if (state == null) {
-            return ServerSetup(connect: connect, error: setupError);
-          }
-          return ListenableBuilder(
-            listenable: state,
-            builder: (_, _) {
-              if (state.booting) {
-                return const Scaffold(
-                  body: Center(child: CircularProgressIndicator()),
-                );
-              }
-              if (!state.authenticated) {
-                return LoginScreen(state: state, changeServer: changeServer);
-              }
-              return WorkspaceScreen(
-                state: state,
-                native: native,
-                settings: () =>
-                    showSettings(context, updater, state, changeServer),
+    home: StartupUpdatePrompt(
+      updater: updater,
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: edgeStyle,
+        child: Builder(
+          builder: (context) {
+            if (starting) {
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
               );
-            },
-          );
-        },
+            }
+            final state = workspace;
+            if (state == null) {
+              return ServerSetup(connect: connect, error: setupError);
+            }
+            return ListenableBuilder(
+              listenable: state,
+              builder: (_, _) {
+                if (state.booting) {
+                  return const Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                if (!state.authenticated) {
+                  return LoginScreen(state: state, changeServer: changeServer);
+                }
+                return WorkspaceScreen(
+                  state: state,
+                  native: native,
+                  settings: () =>
+                      showSettings(context, updater, state, changeServer),
+                );
+              },
+            );
+          },
+        ),
       ),
     ),
   );
@@ -131,13 +135,17 @@ class Brand extends StatelessWidget {
         child: Image.asset('assets/airemote.png', width: size, height: size),
       ),
       const SizedBox(width: 10),
-      Text(
-        'AIRemote.',
-        style: TextStyle(
-          fontWeight: FontWeight.w700,
-          fontSize: size * .73,
-          letterSpacing: -.6,
-          color: ink,
+      Flexible(
+        child: Text(
+          'AIRemote.',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontWeight: FontWeight.w700,
+            fontSize: size * .73,
+            letterSpacing: -.6,
+            color: ink,
+          ),
         ),
       ),
     ],
@@ -450,70 +458,18 @@ Future<void> showSettings(
                     ),
                     const Divider(),
                     const SizedBox(height: 12),
-                    Text(
-                      updater.label,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    if (updater.busy) ...[
-                      const SizedBox(height: 14),
-                      LinearProgressIndicator(
-                        value: updater.stage == 'downloading'
-                            ? updater.fraction
-                            : null,
-                      ),
-                    ],
-                    if (updater.stage == 'downloading')
-                      Padding(
-                        padding: const EdgeInsets.only(top: 10),
-                        child: Text(
-                          updater.detail,
-                          style: const TextStyle(color: muted, fontSize: 12),
-                        ),
-                      ),
-                    if (updater.error.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 12),
-                        child: Text(
-                          updater.error,
-                          style: const TextStyle(
-                            color: Colors.red,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ),
+                    UpdateStatus(updater: updater),
                     const SizedBox(height: 16),
                     Wrap(
                       spacing: 10,
                       runSpacing: 8,
                       children: [
-                        if (!updater.busy)
+                        if (updater.canCheck)
                           OutlinedButton(
                             onPressed: updater.check,
                             child: const Text('检查更新'),
                           ),
-                        if (updater.stage == 'available' ||
-                            updater.stage == 'error' && updater.release != null)
-                          FilledButton(
-                            onPressed: updater.download,
-                            child: Text(
-                              updater.stage == 'error' ? '重试下载' : '下载更新',
-                            ),
-                          ),
-                        if (['ready', 'installing'].contains(updater.stage))
-                          FilledButton(
-                            onPressed: updater.install,
-                            child: const Text('安装更新'),
-                          ),
-                        if (updater.stage == 'permission')
-                          FilledButton(
-                            onPressed: () async {
-                              await updater.platform.openInstallPermission();
-                            },
-                            child: const Text('打开安装权限设置'),
-                          ),
+                        ?updateAction(updater),
                         TextButton(
                           onPressed: () => launchUrl(
                             Uri.parse('https://github.com/Winlifes/AIRemote'),
@@ -523,7 +479,12 @@ Future<void> showSettings(
                         ),
                       ],
                     ),
-                    if (updater.busy)
+                    if ([
+                      'connecting',
+                      'downloading',
+                      'verifying',
+                      'verifying_app',
+                    ].contains(updater.stage))
                       const Padding(
                         padding: EdgeInsets.only(top: 10),
                         child: Text(

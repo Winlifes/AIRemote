@@ -1,3 +1,5 @@
+import 'dart:async';
+
 // ignore: deprecated_member_use
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -24,19 +26,21 @@ class _BootstrapState extends State<Bootstrap> with WidgetsBindingObserver {
   final Vault vault = const SecureVault();
   final native = NativePlatform();
   Workspace? workspace;
-  AppUpdater? updater;
+  late final AppUpdater updater;
   String? server;
   String error = '';
   @override
   void initState() {
     super.initState();
+    updater = AppUpdater(vault, native: native);
     WidgetsBinding.instance.addObserver(this);
-    restore();
+    unawaited(updater.initialize());
+    unawaited(restore());
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState value) {
-    if (value == AppLifecycleState.resumed) updater?.resumed();
+    if (value == AppLifecycleState.resumed) unawaited(updater.resumed());
   }
 
   Future<void> restore() async {
@@ -47,8 +51,6 @@ class _BootstrapState extends State<Bootstrap> with WidgetsBindingObserver {
         legacy = await native.legacySession();
         address = legacy['server'] as String?;
       }
-      updater = AppUpdater(vault);
-      unawaitedInitialization();
       if (address != null && address.isNotEmpty) {
         await connect(address, legacyCookie: legacy['cookie'] as String?);
       } else if (mounted) {
@@ -64,14 +66,6 @@ class _BootstrapState extends State<Bootstrap> with WidgetsBindingObserver {
         });
       }
     }
-  }
-
-  void unawaitedInitialization() {
-    updater!.initialize().catchError((Object e) {
-      updater!.error = '$e';
-      updater!.stage = 'error';
-      updater!.changed();
-    });
   }
 
   Future<void> connect(String address, {String? legacyCookie}) async {
@@ -94,7 +88,7 @@ class _BootstrapState extends State<Bootstrap> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     workspace?.dispose();
-    updater?.dispose();
+    updater.dispose();
     super.dispose();
   }
 

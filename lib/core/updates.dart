@@ -229,9 +229,13 @@ class GitHubReleases {
 }
 
 class AppUpdater extends ChangeNotifier {
+  static const _foregroundInterval = Duration(minutes: 15);
   final GitHubReleases source;
   final NativePlatform platform;
   final Vault vault;
+  final _clock = Stopwatch()..start();
+  Duration? _lastCheck;
+  bool _automatic = false;
   String stage = 'idle', error = '', currentVersion = '';
   int downloaded = 0;
   int? total;
@@ -243,15 +247,20 @@ class AppUpdater extends ChangeNotifier {
     : source = releases ?? GitHubReleases(),
       platform = native ?? NativePlatform();
   bool get busy => [
+    'initializing',
     'checking',
     'connecting',
     'downloading',
     'verifying',
     'verifying_app',
   ].contains(stage);
+  bool get canCheck => platform.supportsApkUpdates && !busy;
+  AppRelease? get automaticUpdate =>
+      autoCheck && _automatic && stage == 'available' ? release : null;
   double? get fraction =>
       total != null && total! > 0 ? (downloaded / total!).clamp(0, 1) : null;
   String get label => switch (stage) {
+    'initializing' => '正在读取当前版本…',
     'checking' => '正在检查 GitHub 新版本…',
     'available' => '发现新版本 ${release?.version}',
     'latest' => '已是最新版本 $currentVersion',
@@ -274,17 +283,24 @@ class AppUpdater extends ChangeNotifier {
   }
 
   Future<void> initialize() async {
-    final info = await platform.appInfo();
-    currentVersion = info.version;
-    autoCheck = await vault.read('auto-update') != 'false';
+    stage = 'initializing';
     changed();
-    final last = int.tryParse(await vault.read('last-update-check') ?? '') ?? 0;
-    if (autoCheck &&
-        DateTime.now().millisecondsSinceEpoch - last >
-            const Duration(hours: 6).inMilliseconds &&
-        Platform.isAndroid) {
-      check();
+    try {
+      final info = await platform.appInfo();
+      final preference = await vault.read('auto-update');
+      if (disposed) return;
+      currentVersion = info.version;
+      autoCheck = preference != 'false';
+      stage = platform.supportsApkUpdates ? 'idle' : 'unsupported';
+      if (stage == 'idle' && autoCheck) {
+        await check(automatic: true);
+        return;
+      }
+    } catch (e) {
+      stage = 'error';
+      error = updateError(e);
     }
+    changed();
   }
 
   Future<void> setAuto(bool value) async {
@@ -293,25 +309,26 @@ class AppUpdater extends ChangeNotifier {
     changed();
   }
 
-  Future<void> check() async {
-    if (busy) return;
-    if (Platform.isIOS) {
+  Future<void> check({bool automatic = false}) async {
+    if (disposed || busy || (automatic && !autoCheck)) return;
+    if (!platform.supportsApkUpdates) {
       stage = 'unsupported';
       changed();
       return;
     }
+    _automatic = automatic;
+    _lastCheck = _clock.elapsed;
     stage = 'checking';
     error = '';
     changed();
     try {
-      release = await source.latest();
-      await vault.write(
-        'last-update-check',
-        '${DateTime.now().millisecondsSinceEpoch}',
-      );
-      stage = versionCode(release!.version) > versionCode(currentVersion)
-          ? 'available'
-          : 'latest';
+      final current = versionCode(currentVersion);
+      if (current < 0) throw const ApiError('无法读取当前应用版本。');
+      final latest = await source.latest();
+      if (disposed) return;
+      final newer = versionCode(latest.version) > current;
+      release = newer ? latest : null;
+      stage = newer ? 'available' : 'latest';
     } catch (e) {
       error = updateError(e);
       stage = 'error';
@@ -369,15 +386,25 @@ class AppUpdater extends ChangeNotifier {
   }
 
   Future<void> resumed() async {
-    if (stage != 'permission' || !Platform.isAndroid) return;
-    try {
-      if (await platform.canInstallUpdates()) {
-        stage = 'ready';
+    if (disposed || !platform.supportsApkUpdates) return;
+    if (stage == 'permission') {
+      try {
+        if (await platform.canInstallUpdates()) {
+          stage = 'ready';
+          changed();
+        }
+      } catch (e) {
+        error = '$e';
         changed();
       }
-    } catch (e) {
-      error = '$e';
-      changed();
+      return;
+    }
+    final last = _lastCheck;
+    if (last != null &&
+        _clock.elapsed - last >= _foregroundInterval &&
+        stage != 'ready' &&
+        stage != 'installing') {
+      await check(automatic: true);
     }
   }
 

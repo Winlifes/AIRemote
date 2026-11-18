@@ -142,6 +142,7 @@ jobs:
           cat > release-notes.md <<'NOTES'
           手机查看和继续 Mac 上的 Codex、DeepSeek Harness 和 Claude Code 对话。
 
+          - Android 冷启动会自动检查稳定版。发现新版时弹窗提供「稍后」和「下载更新」，并显示下载进度和安装步骤。
           - 手机 App 内可查看账号和设备状态、生成配对码、解绑电脑和使用邀请码注册。管理员可在 App 内生成或撤销邀请、启用或停用账号、管理绑定设备。
           - 同一站点可邀请多个账号，各账号可配对多台电脑。项目和对话按 AI 客户端汇总，实际操作路由到原设备。
           - Windows：解压 AIRemote-windows.zip，安装 Python 3.11+（含 Launcher 和 Tcl/Tk），双击 AIRemote.cmd。当前支持配对、读取授权项目中的 Codex 会话和下载关联文件。

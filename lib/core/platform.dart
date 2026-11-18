@@ -20,6 +20,8 @@ class SecureVault implements Vault {
 
 class NativePlatform {
   static const channel = MethodChannel('fun.winlife.airemote/native');
+  bool get supportsApkUpdates => Platform.isAndroid;
+
   Future<Json> legacySession() async {
     if (!Platform.isAndroid) return {};
     return Map<String, dynamic>.from(
