@@ -45,7 +45,6 @@ jobs:
       - run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"'
       - run: flutter pub get --enforce-lockfile
       - run: flutter analyze && flutter test
-      - run: flutter test test_live/github_update_test.dart
       - name: Restore private signing key
         env:
           KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}

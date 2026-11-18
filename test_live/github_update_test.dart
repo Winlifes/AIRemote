@@ -1,4 +1,4 @@
-// Optional network integration check, run explicitly by CI outside unit tests.
+// Optional check of the currently published GitHub update feed.
 // ignore_for_file: avoid_print
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';

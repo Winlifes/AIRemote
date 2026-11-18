@@ -179,6 +179,59 @@ void main() {
     );
   }
   test(
+    'published update fixtures resolve a checksum and download through the GitHub CDN',
+    () async {
+      const base =
+          'https://github.com/Winlifes/AIRemote/releases/download/v1.2.3';
+      const apkUrl = '$base/AIRemote-android.apk';
+      const manifestUrl = '$base/SHA256SUMS';
+      const cdnUrl = 'https://release-assets.githubusercontent.com/fixture.apk';
+      final bytes = utf8.encode('AIRemote update fixture');
+      final digest = sha256.convert(bytes).toString();
+      final metadata = {
+        'tag_name': 'v1.2.3',
+        'assets': [
+          {
+            'name': 'AIRemote-android.apk',
+            'browser_download_url': apkUrl,
+            'size': bytes.length,
+          },
+          {'name': 'SHA256SUMS', 'browser_download_url': manifestUrl},
+        ],
+      };
+      final client = Client([
+        Response([utf8.encode(jsonEncode(metadata))]),
+        Response([utf8.encode('$digest  AIRemote-android.apk\n')]),
+        Response(
+          [],
+          statusCode: 302,
+          headers: Headers()..set(HttpHeaders.locationHeader, cdnUrl),
+        ),
+        Response([bytes]),
+      ]);
+      final source = GitHubReleases(httpClient: client);
+      addTearDown(source.close);
+      final directory = await Directory.systemTemp.createTemp('airemote-feed-');
+      addTearDown(() => directory.delete(recursive: true));
+      final release = await source.latest();
+      final progress = <(int, int?)>[];
+      final file = await source.download(release, directory, (bytes, total, _) {
+        progress.add((bytes, total));
+      });
+      expect(release.version, 'v1.2.3');
+      expect(progress.first, (0, bytes.length));
+      expect(progress.last, (bytes.length, bytes.length));
+      expect(file.path, endsWith('.apk'));
+      expect(await file.readAsBytes(), bytes);
+      expect(client.urls.map((url) => url.toString()), [
+        'https://api.github.com/repos/Winlifes/AIRemote/releases/latest',
+        manifestUrl,
+        apkUrl,
+        cdnUrl,
+      ]);
+    },
+  );
+  test(
     'checksum failure removes partial file and never prepares an installable APK',
     () async {
       final directory = await Directory.systemTemp.createTemp(

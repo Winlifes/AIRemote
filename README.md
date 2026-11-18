@@ -139,6 +139,8 @@ npm --prefix web run build
 
 版本号在 `VERSION`，同步 `pubspec.yaml` 与网页 package 文件；Android versionCode 使用 `major * 1000000 + minor * 1000 + patch`。GitHub Actions 执行回归与构建。签名私钥仅放在维护者私有目录和 Actions Secrets。
 
+常规 CI 和签名发布使用固定的更新响应测试版本解析、下载和 SHA-256 校验。需要核实 GitHub 上已发布的更新时，在 **Build and test** 工作流手动启用 **Check live update feed**，或在本机执行 `flutter test test_live/github_update_test.dart`。
+
 推送 `v<VERSION>` 标签会执行正式发布工作流：测试通过后构建签名 APK、通用 Mac 应用和包含网页的中继包，同时验证 iOS 模拟器构建，统一生成 `SHA256SUMS`，最后发布完整的 GitHub Release。Android 签名通过仓库 Secrets `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD` 配置；前三者中的 alias 应与 keystore 一致。只在受信任的发布标签中使用这些 Secrets，fork 需配置自己的签名。
 
 ```sh

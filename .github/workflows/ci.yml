@@ -4,6 +4,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      check_live_update_feed:
+        description: Check live update feed and download the published APK
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -35,7 +40,6 @@ jobs:
       - run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"'
       - run: flutter pub get --enforce-lockfile
       - run: flutter analyze && flutter test
-      - run: flutter test test_live/github_update_test.dart
       - run: flutter build apk --debug
       - run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug
         working-directory: android
@@ -53,3 +57,12 @@ jobs:
       - run: flutter build ios --simulator --no-codesign
       - run: python3 macos/test_update_progress.py
       - run: python3 macos/build_app.py --zip dist/AIRemote-macos.zip
+
+  live-update-feed:
+    if: github.event_name == 'workflow_dispatch' && inputs.check_live_update_feed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/flutter
+      - run: flutter pub get --enforce-lockfile
+      - run: flutter test test_live/github_update_test.dart
