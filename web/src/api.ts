@@ -1,4 +1,5 @@
-export type Device = { online: boolean; connectorOnline: boolean; name?: string; last_seen?: number; error?: string };
+export type Device = { online: boolean; connectorOnline: boolean; name?: string; last_seen?: number; error?: string; deviceCount?: number; onlineCount?: number; catalogRevision?: string };
+export type RelaySession = { username: string; accountId?: string; isAdmin?: boolean; csrf: string; device: Device };
 declare global {
   interface Window { AIRemoteAndroid?: { download: (url: string, name: string, mime: string) => void; openSettings: () => void } }
 }
@@ -50,11 +51,14 @@ export type Receipt = {
 };
 
 let csrf = '';
+let generation = 0;
+export function forgetSession() { csrf = ''; generation++; }
 export class APIError extends Error {
   constructor(message: string, public status = 0, public requestId?: string) { super(message); }
 }
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const started = generation;
   let response: Response;
   try {
     response = await fetch(path, {
@@ -63,33 +67,41 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     });
   } catch { throw new APIError('网络未连接，请检查手机网络后重试。'); }
   const body = await response.json().catch(() => ({}));
+  if (started !== generation) throw new APIError('登录状态已变化。');
   if (!response.ok) {
-    if (response.status === 401 && path !== '/api/login') window.dispatchEvent(new Event('airemote:logout'));
+    if (response.status === 401 && path !== '/api/login' && path !== '/api/register') window.dispatchEvent(new Event('airemote:logout'));
     throw new APIError(body.error || `请求失败 (${response.status})`, response.status);
   }
   return body as T;
 }
 
 export async function session() {
-  const result = await api<{ username: string; csrf: string; device: Device }>('/api/session');
+  const result = await api<RelaySession>('/api/session');
   csrf = result.csrf;
   return result;
 }
 export async function login(username: string, password: string) {
-  const result = await api<{ csrf: string }>('/api/login', { method: 'POST', body: JSON.stringify({ username, password }) });
-  csrf = result.csrf;
+  await api('/api/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+  forgetSession();
+  return session();
+}
+export async function register(code: string, password: string) {
+  await api('/api/register', { method: 'POST', body: JSON.stringify({ code, password }) });
+  forgetSession();
   return session();
 }
 export async function logout() {
   await api('/api/logout', { method: 'POST', body: '{}' });
-  csrf = '';
+  forgetSession();
 }
 const delay = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
 
 export async function bridgeResponse(path: string, method = 'GET', body: object = {}, key: string = crypto.randomUUID()): Promise<Response> {
+  const started = generation;
   const request = { path, method, body, key };
   let job: { id: string; state: string } | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
+    if (started !== generation) throw new APIError('登录状态已变化。');
     try { job = await api('/api/requests', { method: 'POST', body: JSON.stringify(request) }); break; }
     catch (error) {
       if (attempt || (error instanceof APIError && error.status)) throw error;
@@ -100,9 +112,11 @@ export async function bridgeResponse(path: string, method = 'GET', body: object 
   const id = job.id;
   const deadline = Date.now() + 145_000;
   while (Date.now() < deadline) {
+    if (started !== generation) throw new APIError('登录状态已变化。');
     const state = await api<{ state: string }>(`/api/requests/${id}`);
     if (state.state === 'done') {
       const response = await fetch(`/api/requests/${id}/result`, { credentials: 'same-origin', cache: 'no-store' });
+      if (started !== generation) throw new APIError('登录状态已变化。');
       if (!response.ok) {
         const value = await response.json().catch(() => ({}));
         throw new APIError(value.error || 'Mac 返回了错误，请刷新后查看对话。', response.status, id);

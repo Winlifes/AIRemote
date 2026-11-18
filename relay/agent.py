@@ -11,11 +11,16 @@ import threading
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from protocol import MAX_RESULT, validate_request
 
 VERSION = (Path(__file__).resolve().parents[1] / 'VERSION').read_text().strip()
+
+
+class NoRelayRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
 
 
 def acquire_agent_lock(config_path):
@@ -46,13 +51,14 @@ class Agent:
             raise PermissionError("Connector token must have mode 0600")
         self.local_token = token_path.read_text().strip()
         self.stop = threading.Event()
+        self.relay_http = build_opener(NoRelayRedirect)
         self.executor = ThreadPoolExecutor(max_workers=6)
         self.jobs = {}
 
     def remote(self, path, data=None, headers=None, timeout=35):
         combined = {"Authorization": "Bearer " + self.config["agent_token"], **(headers or {})}
         request = Request(self.base + path, data=data, headers=combined, method="POST")
-        with urlopen(request, timeout=timeout) as response:
+        with self.relay_http.open(request, timeout=timeout) as response:
             return json.load(response)
 
     def local(self, method, path, body=None, key=None):
@@ -135,6 +141,10 @@ class Agent:
                 if job and job["id"] not in self.jobs:
                     self.jobs[job["id"]] = self.executor.submit(self.execute, job)
             except (OSError, URLError, TimeoutError, ValueError) as error:
+                if isinstance(error, HTTPError) and error.code in {401, 403}:
+                    print(json.dumps({"relayConnection": "registration_revoked"}), flush=True)
+                    self.stop.set()
+                    continue
                 print(json.dumps({"relayConnection": "retrying", "error": type(error).__name__, "retrySeconds": delay}), flush=True)
                 self.stop.wait(delay)
                 delay = min(delay * 2, 30)

@@ -70,6 +70,7 @@ class RelayApi implements RemoteApi {
   final Vault vault;
   final HttpClient client;
   String _cookie = '', _csrf = '';
+  int _sessionGeneration = 0;
   RelayApi(String address, this.vault, {HttpClient? httpClient})
     : server = normalizeServer(address),
       client = httpClient ?? HttpClient() {
@@ -84,6 +85,12 @@ class RelayApi implements RemoteApi {
   @override
   String get cookieHeader => _cookie;
 
+  void _ensureSession(int generation) {
+    if (generation != _sessionGeneration) {
+      throw const ApiError('登录状态已变化。', 409);
+    }
+  }
+
   Future<(int, List<int>)> _http(
     String path, {
     String method = 'GET',
@@ -92,8 +99,10 @@ class RelayApi implements RemoteApi {
     if (!path.startsWith('/api/') || path.startsWith('//')) {
       throw const ApiError('无效的服务器请求');
     }
+    final generation = _sessionGeneration;
     try {
       final request = await client.openUrl(method, Uri.parse('$server$path'));
+      _ensureSession(generation);
       request.followRedirects = false;
       request.headers.contentType = ContentType.json;
       if (_cookie.isNotEmpty) {
@@ -109,6 +118,7 @@ class RelayApi implements RemoteApi {
       final response = await request.close().timeout(
         const Duration(seconds: 40),
       );
+      _ensureSession(generation);
       for (final cookie in response.cookies) {
         if (cookie.name != '__Host-airemote_session' &&
             cookie.name != 'airemote_session') {
@@ -130,6 +140,7 @@ class RelayApi implements RemoteApi {
         }
         bytes.addAll(chunk);
       }
+      _ensureSession(generation);
       return (response.statusCode, bytes);
     } on ApiError {
       rethrow;
@@ -183,6 +194,7 @@ class RelayApi implements RemoteApi {
       method: 'POST',
       body: {'username': username, 'password': password},
     );
+    _sessionGeneration++;
     _csrf = value['csrf'] as String? ?? '';
     return session();
   }
@@ -190,6 +202,7 @@ class RelayApi implements RemoteApi {
   @override
   Future<void> logout() async {
     await api('/api/logout', method: 'POST');
+    _sessionGeneration++;
     _csrf = '';
     _cookie = '';
     await vault.remove(_cookieKey);
@@ -197,7 +210,9 @@ class RelayApi implements RemoteApi {
 
   Future<String> _job(String path, String method, Json body, String key) async {
     // Retry only a lost submission, with the identical relay idempotency key.
+    final generation = _sessionGeneration;
     for (var attempt = 0; ; attempt++) {
+      _ensureSession(generation);
       try {
         return (await api(
               '/api/requests',
@@ -218,9 +233,11 @@ class RelayApi implements RemoteApi {
     Json body,
     String key,
   ) async {
+    final generation = _sessionGeneration;
     final id = await _job(path, method, body, key);
     final end = DateTime.now().add(const Duration(seconds: 145));
     while (DateTime.now().isBefore(end)) {
+      _ensureSession(generation);
       final value = await api('/api/requests/$id');
       if (value['state'] == 'done') return id;
       if (['expired', 'unknown', 'result_expired'].contains(value['state'])) {

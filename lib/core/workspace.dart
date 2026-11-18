@@ -233,6 +233,7 @@ class Workspace extends ChangeNotifier {
     changed();
     try {
       final value = await api.login(username, password);
+      _clearAccount();
       device = Map<String, dynamic>.from(value['device'] ?? {});
       authenticated = true;
       await refreshProviders();
@@ -248,18 +249,7 @@ class Workspace extends ChangeNotifier {
   Future<void> logout() async {
     try {
       await api.logout();
-      authenticated = false;
-      selected = '';
-      _generation++;
-      _providerGeneration++;
-      messages = [];
-      projects = [];
-      projectChats.clear();
-      expandedProjects.clear();
-      threads = {};
-      queue = [];
-      receipt = {};
-      drafts.clear();
+      _clearAccount();
       error = '';
       changed();
     } catch (e) {
@@ -268,24 +258,58 @@ class Workspace extends ChangeNotifier {
     }
   }
 
+  void _clearAccount() {
+    authenticated = false;
+    selected = '';
+    drawerOpen = false;
+    _generation++;
+    _providerGeneration++;
+    _projectsLoaded = false;
+    device = {};
+    providersById = {};
+    messages = [];
+    projects = [];
+    projectChats.clear();
+    expandedProjects.clear();
+    loadingProjects.clear();
+    projectErrors.clear();
+    laneErrors.clear();
+    threads = {};
+    queue = [];
+    receipt = {};
+    drafts.clear();
+    _uncertainWrites.clear();
+    olderCursor = null;
+    hasOlder = false;
+    _pendingPage = null;
+  }
+
   Future<void> refreshDevice() async {
-    if (_pending.contains('device')) return;
-    _pending.add('device');
+    final scope = _providerGeneration, key = 'device:$_providerGeneration';
+    if (_pending.contains(key)) return;
+    _pending.add(key);
     try {
-      device = await api.api('/api/device');
+      final current = await api.api('/api/device');
+      if (scope != _providerGeneration || disposed) return;
+      if (current['catalogRevision'] != device['catalogRevision']) {
+        _projectsLoaded = false;
+      }
+      device = current;
       await refreshProviders();
       if (online && !_projectsLoaded) await loadProjects();
     } catch (e) {
-      _error(e);
+      if (scope == _providerGeneration) _error(e);
     } finally {
-      _pending.remove('device');
+      _pending.remove(key);
       changed();
     }
   }
 
   Future<void> refreshProviders() async {
     if (device['online'] != true) return;
+    final scope = _providerGeneration;
     final value = await api.bridge('/api/providers');
+    if (scope != _providerGeneration || disposed) return;
     providersById = {
       for (final item in objects(value['providers']))
         item['id'] as String: item,
@@ -718,8 +742,7 @@ class Workspace extends ChangeNotifier {
 
   void _authenticationError(Object e) {
     if (e is ApiError && e.status == 401) {
-      authenticated = false;
-      _generation++;
+      _clearAccount();
     }
   }
 

@@ -19,7 +19,7 @@ def bundle_runtime(destination):
     files = {
         'poc': ['app_server_rpc.py', 'claude_adapter.py', 'codex_probe.py', 'control_server.py', 'deepseek_adapter.py', 'desktop_ipc.py', 'project_catalog.py', 'goal_transport.py'],
         'relay': ['agent.py', 'client.py', 'protocol.py'],
-        'deploy': ['start_mac.py', 'configure_mac.py', 'install_deepseek.py', 'deepseek-link.mjs', 'update_mac.py', 'update_core.py', 'setup_goal_channel.py'],
+        'deploy': ['start_mac.py', 'configure_mac.py', 'pair_mac.py', 'install_deepseek.py', 'deepseek-link.mjs', 'update_mac.py', 'update_core.py', 'setup_goal_channel.py'],
     }
     for directory, names in files.items():
         target = destination / directory; target.mkdir(parents=True, exist_ok=True)

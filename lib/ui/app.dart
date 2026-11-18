@@ -336,6 +336,13 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                   TextButton(
+                    onPressed: () => launchUrl(
+                      Uri.parse('${widget.state.api.server}/register'),
+                      mode: LaunchMode.externalApplication,
+                    ),
+                    child: const Text('使用邀请码'),
+                  ),
+                  TextButton(
                     onPressed: widget.changeServer,
                     child: const Text('更换服务器'),
                   ),
@@ -398,6 +405,15 @@ void showSettings(
                         Navigator.pop(context);
                         changeServer();
                       },
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.devices_outlined),
+                      title: const Text('账号与设备'),
+                      onTap: () => launchUrl(
+                        Uri.parse('${state.api.server}/account'),
+                        mode: LaunchMode.externalApplication,
+                      ),
                     ),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,

@@ -16,19 +16,12 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
+from accounts import Accounts, Conflict, Forbidden, LEGACY_DEVICE, OWNER, SESSION_AGE, digest, password_hash
 from protocol import MAX_BODY, MAX_RESULT, validate_request
+from routing import Router, Unavailable, combined_state
 
-SESSION_AGE = 7 * 86400
 RESULT_AGE = 15 * 60
 VERSION = (Path(__file__).resolve().parents[1] / 'VERSION').read_text().strip()
-
-
-def digest(value):
-    return hashlib.sha256(value.encode()).hexdigest()
-
-
-def password_hash(password, salt):
-    return hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 600000).hex()
 
 
 def initialize_config(path, origin, password=None):
@@ -113,6 +106,21 @@ class Store:
             raise LookupError("请求不存在或已过期。")
         return dict(row)
 
+    def get_by_key(self, key):
+        with self.db() as db:
+            row = db.execute('SELECT * FROM jobs WHERE request_key=?', (key,)).fetchone()
+        if row and row['expires'] < time.time() and row['state'] in {'queued', 'working'}:
+            return self.get(row['id'])
+        return dict(row) if row else None
+
+    def disconnect(self):
+        with self.db() as db:
+            db.execute('DELETE FROM device')
+            db.execute("UPDATE jobs SET state=CASE WHEN attempts>0 THEN 'unknown' ELSE 'expired' END,request='{}' "
+                       "WHERE state IN ('queued','working')")
+        with self.condition:
+            self.condition.notify_all()
+
     def claim(self):
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -154,26 +162,40 @@ class Store:
             db.execute("DELETE FROM attempts WHERE created<?", (time.time() - 900,))
 
 
-class Conflict(RuntimeError):
-    pass
-
-
-class Unavailable(RuntimeError):
-    pass
-
-
 class RelayServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, config, state, static):
         self.config = config
         self.store = Store(state)
+        self.accounts = Accounts(self.store.root, config)
+        self.device_stores = {LEGACY_DEVICE: self.store}
+        self.store_lock = threading.Lock()
+        for device in self.accounts.devices(include_revoked=True):
+            self.device_store(device['id'])
+        self.router = Router(self.store.root, self.accounts, self.device_store)
+        self.last_account_cleanup = 0
         self.static = Path(static).resolve()
         super().__init__(address, Handler)
 
+    def device_store(self, device):
+        with self.store_lock:
+            if device not in self.device_stores:
+                self.device_stores[device] = Store(self.store.root / 'devices' / device)
+            return self.device_stores[device]
+
     def service_actions(self):
         # Expire cached responses even if the Mac and browsers are both offline.
-        self.store.cleanup()
+        now = time.time()
+        if self.last_account_cleanup > now - 60:
+            return
+        self.last_account_cleanup = now
+        with self.store_lock:
+            stores = list(self.device_stores.values())
+        for store in stores:
+            store.cleanup()
+        self.accounts.cleanup(now)
+        self.router.cleanup(now)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -234,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def user(self, mutation=False):
         if self.secret("owner_token"):
-            return {"csrf": "", "api": True}
+            return {"csrf": "", "account": OWNER, "username": self.server.config['username'], "api": True}
         self.same_origin()
         try:
             cookie = SimpleCookie(self.headers.get("Cookie", ""))
@@ -242,8 +264,14 @@ class Handler(BaseHTTPRequestHandler):
             raw = cookie[name].value
         except (KeyError, ValueError):
             raise PermissionError("请先登录。")
-        with self.server.store.db() as db:
-            row = db.execute("SELECT * FROM sessions WHERE token_hash=? AND expires>?", (digest(raw), time.time())).fetchone()
+        current = self.server.accounts.session(raw)
+        if current:
+            row = dict(current)
+        else:
+            # Cookies issued by 0.9.x belong to the original site owner.
+            with self.server.store.db() as db:
+                legacy = db.execute("SELECT * FROM sessions WHERE token_hash=? AND expires>?", (digest(raw), time.time())).fetchone()
+            row = {**legacy, 'account': OWNER, 'username': self.server.config['username'], 'legacy': True} if legacy else None
         if not row:
             raise PermissionError("登录已过期，请重新登录。")
         if mutation and not hmac.compare_digest(self.headers.get("X-AIRemote-CSRF", ""), row["csrf"]):
@@ -259,92 +287,150 @@ class Handler(BaseHTTPRequestHandler):
         return {"id": row["id"], "state": row["state"], "status": row["status"],
                 "createdAt": row["created"], "attempts": row["attempts"], "expiresAt": row["expires"]}
 
-    def route(self):
-        path = urlsplit(self.path).path
-        config, store = self.server.config, self.server.store
-        if path == "/api/health" and self.command == "GET":
-            return self.respond(200, {"ok": True, "service": "AIRemote relay", "version": VERSION})
-        if path == "/api/login" and self.command == "POST":
-            self.same_origin()
+    def allow_attempt(self, purpose):
+        forwarded = self.headers.get('X-Forwarded-For', '').split(',')[-1].strip()
+        peer = digest(purpose + ':' + (forwarded or self.client_address[0]))
+        with self.server.store.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            count = db.execute('SELECT count(*) FROM attempts WHERE peer=? AND created>?', (peer, time.time() - 900)).fetchone()[0]
+            if count >= 20:
+                return False
+            db.execute('INSERT INTO attempts VALUES(?,?)', (peer, time.time()))
+        return True
+
+    def open_session(self, account):
+        raw, csrf, username = self.server.accounts.new_session(account)
+        return self.respond(200, {'username': username, 'csrf': csrf}, {'Set-Cookie': self.cookie(raw)})
+
+    def agent_route(self, path):
+        accounts = self.server.accounts
+        authorization = self.headers.get('Authorization', '')
+        device = accounts.agent(authorization)
+        store = self.server.device_store(device['id'])
+        if path == '/api/agent/poll' and self.command == 'POST':
             value = self.json_body()
-            forwarded = self.headers.get("X-Forwarded-For", "").split(",")[-1].strip()
-            peer = digest(forwarded or self.client_address[0])
-            with store.db() as db:
-                n = db.execute("SELECT count(*) FROM attempts WHERE peer=? AND created>?", (peer, time.time() - 900)).fetchone()[0]
-                if n >= 10:
-                    return self.respond(429, {"error": "登录尝试过多，请 15 分钟后再试。"})
-                db.execute("INSERT INTO attempts VALUES(?,?)", (peer, time.time()))
-            username, password = value.get("username", ""), value.get("password", "")
-            if not isinstance(username, str) or not isinstance(password, str) or len(password) > 1024:
-                raise PermissionError("用户名或密码不正确。")
-            hashed = password_hash(password, config["password_salt"])
-            if not hmac.compare_digest(username, config["username"]) or not hmac.compare_digest(hashed, config["password_hash"]):
-                raise PermissionError("用户名或密码不正确。")
-            raw, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(24)
-            with store.db() as db:
-                db.execute("INSERT INTO sessions VALUES(?,?,?)", (digest(raw), csrf, time.time() + SESSION_AGE))
-            return self.respond(200, {"username": config["username"], "csrf": csrf}, {"Set-Cookie": self.cookie(raw)})
-        if path.startswith("/api/agent/"):
-            if not self.secret("agent_token"):
-                raise PermissionError("Agent authentication required")
-            if path == "/api/agent/poll" and self.command == "POST":
-                value = self.json_body()
+            with accounts.lock:
+                accounts.agent(authorization)
                 store.cleanup()
                 with store.db() as db:
                     db.execute("INSERT INTO device VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,last_seen=excluded.last_seen,connector_online=excluded.connector_online,error=excluded.error,agent_version=excluded.agent_version", (
-                        str(value.get("name", config["device_name"]))[:80], time.time(), int(bool(value.get("connectorOnline"))),
-                        str(value.get("error", ""))[:200], str(value.get("version", "unknown"))[:40]))
-                deadline = time.monotonic() + 20
-                while time.monotonic() < deadline:
+                        str(value.get('name', device['name']))[:80], time.time(), int(value.get('connectorOnline') is True),
+                        str(value.get('error', ''))[:200], str(value.get('version', 'unknown'))[:40]))
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                with accounts.lock:
+                    accounts.agent(authorization)
                     job = store.claim()
-                    if job:
-                        return self.respond(200, {"job": job})
-                    with store.condition:
-                        store.condition.wait(timeout=1)
-                return self.respond(200, {"job": None})
-            parts = path.strip("/").split("/")
-            if len(parts) == 5 and parts[:3] == ["api", "agent", "jobs"] and parts[4] == "result" and self.command == "POST":
-                job_id = str(uuid.UUID(parts[3]))
-                lease = self.headers.get("X-Relay-Lease", "")
-                status = int(self.headers.get("X-Connector-Status", "502"))
-                if not 100 <= status <= 599:
-                    raise ValueError("Invalid status")
-                headers = {"Content-Type": self.headers.get("X-Connector-Type", "application/octet-stream")[:200]}
-                for source, dest in [("X-Connector-Disposition", "Content-Disposition"), ("X-Connector-Etag", "ETag")]:
-                    value = self.headers.get(source)
-                    if value and len(value) < 2000 and "\r" not in value and "\n" not in value:
-                        headers[dest] = value
-                store.finish(job_id, lease, status, headers, self.body(MAX_RESULT))
-                return self.respond(200, {"saved": True})
-            raise LookupError("Unknown agent endpoint")
-        if path.startswith("/api/"):
-            session = self.user(self.command != "GET")
-            if path == "/api/session" and self.command == "GET":
-                return self.respond(200, {"username": config["username"], "csrf": session["csrf"], "device": store.device()})
-            if path == "/api/logout" and self.command == "POST":
-                if session.get("token_hash"):
+                if job:
+                    return self.respond(200, {'job': job})
+                with store.condition:
+                    store.condition.wait(timeout=1)
+            return self.respond(200, {'job': None})
+        parts = path.strip('/').split('/')
+        if len(parts) == 5 and parts[:3] == ['api', 'agent', 'jobs'] and parts[4] == 'result' and self.command == 'POST':
+            job_id = str(uuid.UUID(parts[3]))
+            lease = self.headers.get('X-Relay-Lease', '')
+            status = int(self.headers.get('X-Connector-Status', '502'))
+            if not 100 <= status <= 599:
+                raise ValueError('Invalid status')
+            headers = {'Content-Type': self.headers.get('X-Connector-Type', 'application/octet-stream')[:200]}
+            for source, dest in [('X-Connector-Disposition', 'Content-Disposition'), ('X-Connector-Etag', 'ETag')]:
+                value = self.headers.get(source)
+                if value and len(value) < 2000 and '\r' not in value and '\n' not in value:
+                    headers[dest] = value
+            content = self.body(MAX_RESULT)
+            with accounts.lock:
+                accounts.agent(authorization)
+                store.finish(job_id, lease, status, headers, content)
+            return self.respond(200, {'saved': True})
+        raise LookupError('Unknown agent endpoint')
+
+    def admin_route(self, path, account):
+        if account != OWNER:
+            raise Forbidden('需要管理员权限。')
+        accounts, router = self.server.accounts, self.server.router
+        if path == '/api/admin' and self.command == 'GET':
+            return self.respond(200, {'accounts': accounts.profiles(), 'devices': router.devices(None, True),
+                                      'invitations': accounts.invitations()})
+        if path == '/api/admin/invitations' and self.command == 'POST':
+            return self.respond(201, accounts.create_invitation(self.json_body().get('username')))
+        parts = path.strip('/').split('/')
+        if self.command == 'POST' and len(parts) == 5:
+            _, _, resource, identifier, action = parts
+            if (resource, action) == ('invitations', 'revoke'):
+                accounts.revoke_invitation(identifier)
+            elif (resource, action) == ('accounts', 'enabled'):
+                enabled = self.json_body().get('enabled')
+                with accounts.lock:
+                    accounts.set_enabled(identifier, enabled)
+                    if not enabled:
+                        for device in accounts.devices(identifier):
+                            self.server.device_store(device['id']).disconnect()
+            elif (resource, action) == ('devices', 'revoke'):
+                accounts.revoke_device(identifier)
+                self.server.device_store(identifier).disconnect()
+            else:
+                raise LookupError('找不到此管理操作。')
+            return self.respond(200, {'ok': True})
+        raise LookupError('找不到此管理页面。')
+
+    def route(self):
+        path = urlsplit(self.path).path
+        store = self.server.store
+        if path == "/api/health" and self.command == "GET":
+            return self.respond(200, {"ok": True, "service": "AIRemote relay", "version": VERSION})
+        accounts, router = self.server.accounts, self.server.router
+        if path in {'/api/login', '/api/register', '/api/pairing/claim'} and self.command == 'POST':
+            self.same_origin()
+            if not self.allow_attempt(path):
+                return self.respond(429, {'error': '尝试次数过多，请稍后重试。'})
+            value = self.json_body()
+            if path == '/api/login':
+                return self.open_session(accounts.authenticate(value.get('username'), value.get('password')))
+            if path == '/api/register':
+                return self.open_session(accounts.register(value.get('code'), value.get('password')))
+            identifier = accounts.claim_pairing(value.get('code'), value.get('tokenHash'), value.get('name'))
+            return self.respond(200, {'deviceId': identifier})
+        if path.startswith('/api/agent/'):
+            return self.agent_route(path)
+        if path.startswith('/api/'):
+            session = self.user(self.command != 'GET')
+            account = session['account']
+            if path.startswith('/api/admin'):
+                return self.admin_route(path, account)
+            if path == '/api/session' and self.command == 'GET':
+                return self.respond(200, {'username': session['username'], 'accountId': account, 'isAdmin': account == OWNER,
+                                          'csrf': session['csrf'], 'device': combined_state(router.devices(account))})
+            if path == '/api/logout' and self.command == 'POST':
+                if session.get('legacy'):
                     with store.db() as db:
-                        db.execute("DELETE FROM sessions WHERE token_hash=?", (session["token_hash"],))
-                return self.respond(200, {"ok": True}, {"Set-Cookie": self.cookie("", 0)})
-            if path == "/api/device" and self.command == "GET":
-                return self.respond(200, store.device())
-            if path == "/api/requests" and self.command == "POST":
-                return self.respond(202, self.job_public(store.submit(validate_request(self.json_body()))))
-            parts = path.strip("/").split("/")
-            if len(parts) in {3, 4} and parts[:2] == ["api", "requests"] and self.command == "GET":
+                        db.execute('DELETE FROM sessions WHERE token_hash=?', (session['token_hash'],))
+                elif session.get('token_hash'):
+                    accounts.end_session(session['token_hash'])
+                return self.respond(200, {'ok': True}, {'Set-Cookie': self.cookie('', 0)})
+            if path == '/api/device' and self.command == 'GET':
+                return self.respond(200, combined_state(router.devices(account)))
+            if path == '/api/account' and self.command == 'GET':
+                return self.respond(200, {'username': session['username'], 'isAdmin': account == OWNER,
+                                          'devices': router.devices(account)})
+            if path == '/api/account/pairings' and self.command == 'POST':
+                return self.respond(201, accounts.create_pairing(account))
+            parts = path.strip('/').split('/')
+            if (self.command == 'POST' and len(parts) == 5 and parts[:3] == ['api', 'account', 'devices']
+                    and parts[4] == 'revoke'):
+                accounts.revoke_device(parts[3], account)
+                self.server.device_store(parts[3]).disconnect()
+                return self.respond(200, {'ok': True})
+            if path == '/api/requests' and self.command == 'POST':
+                return self.respond(202, self.job_public(router.submit(account, validate_request(self.json_body()))))
+            if len(parts) in {3, 4} and parts[:2] == ['api', 'requests'] and self.command == 'GET':
                 job_id = str(uuid.UUID(parts[2]))
-                row = store.get(job_id)
                 if len(parts) == 3:
-                    return self.respond(200, self.job_public(row))
-                if parts[3] != "result":
-                    raise LookupError("Unknown endpoint")
-                if row["state"] != "done":
-                    raise Conflict("请求尚未完成或响应已过期，请重新读取。")
-                blob = store.blobs / job_id
-                if not blob.is_file():
-                    raise LookupError("响应已过期，请重新读取。")
-                return self.respond(row["status"], blob.read_bytes(), json.loads(row["headers"]))
-            raise LookupError("Unknown endpoint")
+                    return self.respond(200, self.job_public(router.status(account, job_id)))
+                if parts[3] == 'result':
+                    status, headers, content = router.result(account, job_id)
+                    return self.respond(status, content, headers)
+            raise LookupError('Unknown endpoint')
         if self.command != "GET":
             raise LookupError("Unknown endpoint")
         requested = self.server.static / path.lstrip("/")
@@ -363,6 +449,8 @@ class Handler(BaseHTTPRequestHandler):
         self.connection.settimeout(90)
         try:
             self.route()
+        except Forbidden as error:
+            self.respond(403, {"error": str(error)})
         except PermissionError as error:
             self.respond(401, {"error": str(error)})
         except LookupError as error:

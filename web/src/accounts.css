@@ -1,0 +1,13 @@
+.account-page{min-height:100dvh;margin:auto;padding:24px clamp(16px,5vw,40px) 52px;max-width:780px;color:#252631}
+.account-top,.account-heading,.managed-account-title{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.account-top{font-size:14px;color:#666879;padding-bottom:20px}
+.account-back,.account-text-button{display:inline-flex;align-items:center;gap:7px;color:#5748c1;font-size:14px;font-weight:600;background:none;border:0;padding:8px 0;text-decoration:none;cursor:pointer;white-space:nowrap}
+.account-heading h1{font-size:28px;letter-spacing:-.04em;margin:0 0 12px}
+.account-card{background:white;border:1px solid #ececf3;border-radius:16px;padding:18px;margin:14px 0}
+.account-card h2{font-size:16px;margin:0 0 7px}.account-muted,.account-card small{color:#696a7c;font-size:13px}
+.account-card .account-muted{margin:6px 0 14px}.account-card .primary,.account-card .secondary{width:auto;min-height:40px}
+.account-invite{display:flex;gap:12px;align-items:end}.account-invite label{flex:1;min-width:0}
+.account-list{list-style:none;margin:6px 0 0;padding:0}.account-list li{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid #eeeef4}.account-list li div{flex:1;min-width:0}.account-list li strong{overflow-wrap:anywhere}.account-list li small,.account-code small{display:block;margin-top:3px}
+.account-code{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin-top:16px;padding:13px;background:#f6f5ff;border-radius:12px}.account-code div{width:100%}.account-code input{flex:1;min-width:170px;font-family:ui-monospace,monospace;background:white}.account-code button{flex-shrink:0}
+.managed-account{padding-top:10px;margin-top:12px;border-top:1px solid #eeeef4}.managed-account-title{min-height:34px}
+.account-login-switch{display:block;margin:8px auto 0;padding:10px;color:#5748c1;background:transparent;border:0;font-size:14px;cursor:pointer}

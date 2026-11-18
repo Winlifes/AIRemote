@@ -150,6 +150,43 @@ struct GoalChannelStatus: Decodable {
         NSWorkspace.shared.open(url)
     }
 
+    func pairMac(origin: String, code: String, name: String, workspace: URL) async -> String? {
+        guard !busy && !updating else { return "正在处理其他操作，请稍后重试。" }
+        busy = true; error = nil
+        message = "正在配对 Mac…"
+        var startAfter = false
+        defer {
+            busy = false
+            if startAfter { run(action: nil) }
+        }
+        let values = ["origin": origin.trimmingCharacters(in: .whitespacesAndNewlines),
+                      "code": code.trimmingCharacters(in: .whitespacesAndNewlines),
+                      "name": name, "workspace": workspace.path]
+        guard let input = try? JSONSerialization.data(withJSONObject: values), input.count < 8192 else {
+            message = "配对未完成"
+            return "请输入有效的网址、配对码和项目目录。"
+        }
+        let previous = project
+        let result = await Self.process([runtime.appendingPathComponent("deploy/pair_mac.py").path], timeout: 33, input: input)
+        guard result.0 == 0, let data = result.1.data(using: .utf8),
+              let response = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let directory = response["directory"] as? String else {
+            message = "配对未完成"
+            return Self.updateError(result.1)
+        }
+        if directory != previous.path && !status.running.isEmpty {
+            let stopped = await Self.execute(directory: previous, runtime: runtime, action: "--stop")
+            if stopped.0 != 0 {
+                message = "配对成功，等待切换服务"
+                return "处理旧服务时遇到问题，请用同一个配对码重试。\n" + String(stopped.1.suffix(1000))
+            }
+        }
+        UserDefaults.standard.set(directory, forKey: "ProjectDirectory")
+        status = RuntimeStatus()
+        startAfter = true
+        return nil
+    }
+
     func openLogs() {
         let url = URL(fileURLWithPath: status.logsDirectory ?? project.appendingPathComponent(".local/logs").path)
         NSWorkspace.shared.open(url)
@@ -237,19 +274,25 @@ struct GoalChannelStatus: Decodable {
             "--runtime-root", runtime.path] + (action.map { [$0] } ?? []), timeout: action == "--status" ? 15 : 75)
     }
 
-    nonisolated private static func process(_ arguments: [String], timeout: TimeInterval) async -> (Int32, String) {
+    nonisolated private static func process(_ arguments: [String], timeout: TimeInterval, input: Data? = nil) async -> (Int32, String) {
         await Task.detached(priority: .utility) {
             let process = Process()
             let pipe = Pipe()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
             process.arguments = arguments
-            process.standardInput = FileHandle.nullDevice
+            let stdin = input.map { _ in Pipe() }
+            if let stdin { process.standardInput = stdin }
+            else { process.standardInput = FileHandle.nullDevice }
             process.standardOutput = pipe; process.standardError = pipe
             do {
                 try process.run()
                 let expiration = DispatchWorkItem { if process.isRunning { process.terminate() } }
                 DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: expiration)
                 defer { expiration.cancel() }
+                if let stdin, let input {
+                    try stdin.fileHandleForWriting.write(contentsOf: input)
+                    try stdin.fileHandleForWriting.close()
+                }
                 let output = pipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
                 if process.terminationStatus == 15 || process.terminationStatus == -15 {
@@ -265,6 +308,7 @@ struct GoalChannelStatus: Decodable {
 
 struct ControlView: View {
     @ObservedObject var model: ServiceModel
+    @State private var pairing = false
     let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -310,6 +354,9 @@ struct ControlView: View {
                 Button("打开手机网页") { model.openWeb() }.frame(maxWidth: .infinity)
                 Button("查看日志") { model.openLogs() }.frame(maxWidth: .infinity)
             }.buttonStyle(.bordered).controlSize(.large)
+            Button { pairing = true } label: {
+                Label("配对 Mac…", systemImage: "link").frame(maxWidth: .infinity)
+            }.buttonStyle(.bordered).disabled(model.busy || model.updating)
             VStack(alignment: .leading, spacing: 7) {
                 Button { model.launchGoalChannel() } label: {
                     Label(model.goalChannel.connected ? "Codex 目标通道已连接" : "通过目标通道启动 Codex", systemImage: "target")
@@ -348,6 +395,7 @@ struct ControlView: View {
             }
         }
         .padding(28).frame(width: 420)
+        .sheet(isPresented: $pairing) { PairMacView(model: model) }
         .alert("发现 AIRemote 新版本", isPresented: Binding(
             get: { model.announceUpdate && !model.busy && !model.updating },
             set: { model.announceUpdate = $0 }
@@ -359,6 +407,51 @@ struct ControlView: View {
         }
         .onAppear { model.launch() }
         .onReceive(timer) { _ in model.refresh() }
+    }
+}
+
+struct PairMacView: View {
+    @ObservedObject var model: ServiceModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var origin = ""
+    @State private var code = ""
+    @State private var name = Host.current().localizedName ?? "我的 Mac"
+    @State private var workspace: URL?
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("配对 Mac").font(.title2.weight(.semibold))
+            Text("在网页的「账号与设备」生成配对码。配对将此 Mac 上的 AI 对话接入该账号。")
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {
+                GridRow { Text("网站地址"); TextField("https://remote.example.com", text: $origin).labelsHidden() }
+                GridRow { Text("配对码"); SecureField("粘贴一次性配对码", text: $code).labelsHidden() }
+                GridRow { Text("设备名称"); TextField("在账号管理中显示", text: $name).labelsHidden() }
+                GridRow {
+                    Text("项目文件夹")
+                    Button(workspace?.lastPathComponent ?? "选择文件夹…") {
+                        let panel = NSOpenPanel()
+                        panel.message = "选择允许下载文件和新建对话的项目目录。"
+                        panel.canChooseFiles = false; panel.canChooseDirectories = true
+                        if panel.runModal() == .OK { workspace = panel.url }
+                    }.help(workspace?.path ?? "授权一个项目目录")
+                }
+            }.disabled(model.busy)
+            if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(model.busy)
+                Button(model.busy ? "正在配对…" : "配对并启动") {
+                    guard let workspace else { return }
+                    Task {
+                        error = await model.pairMac(origin: origin, code: code, name: name, workspace: workspace)
+                        if error == nil { code = ""; dismiss() }
+                    }
+                }.keyboardShortcut(.defaultAction).disabled(model.busy || origin.isEmpty || code.isEmpty || name.isEmpty || workspace == nil)
+            }
+        }.padding(25).frame(width: 440).interactiveDismissDisabled(model.busy)
+            .onAppear { origin = model.status.relay }
     }
 }
 

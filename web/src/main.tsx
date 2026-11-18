@@ -4,9 +4,10 @@ import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Activity, ArrowDown, ArrowLeft, ArrowUp, ArrowUpRight, Check, CheckCheck, ChevronDown, ChevronRight, Clock3, Code2, Copy, CornerDownRight, CornerUpRight, Download, File, FileText, Folder, Inbox, ListOrdered, LoaderCircle, LogOut, Menu, MessageSquare, Monitor, MoreHorizontal, Pencil, Plus, Radio, RefreshCw, Search, Send, ShieldCheck, Sparkles, Target, Terminal, Trash2, WifiOff, X } from 'lucide-react';
-import { api, APIError, Artifact, bridge as remoteBridge, bridgeResponse as remoteBridgeResponse, Device, login, logout, Message, MessagePage, Project, Provider, ProviderId, providerPath, QueueItem, queueText, Receipt, runtime, session, Thread, modelPresentation } from './api';
+import { api, APIError, Artifact, bridge as remoteBridge, bridgeResponse as remoteBridgeResponse, Device, forgetSession, login, logout, register, type RelaySession, Message, MessagePage, Project, Provider, ProviderId, providerPath, QueueItem, queueText, Receipt, runtime, session, Thread, modelPresentation } from './api';
 import { ConversationReader, mergeLatestPage, mergeTurns, visibleMessages as filterVisibleMessages } from './sync';
 import { GoalControl } from './goals';
+import { ManagementPage } from './accounts';
 import './styles.css';
 import './conversation.css';
 import './projects.css';
@@ -54,19 +55,29 @@ function Modal({ title, children, close, className = '' }: { title: string; chil
     <div className="modal-heading"><h2>{title}</h2><button className="icon-button" aria-label="关闭弹窗" onClick={close}><X size={21} /></button></div>{children}
   </dialog>;
 }
-function Login({ onLogin }: { onLogin: (device: Device) => void }) {
+function Login({ onLogin, initialRegistration }: { onLogin: (identity: RelaySession, registered: boolean) => void; initialRegistration: boolean }) {
+  const [registering, setRegistering] = useState(initialRegistration);
   const [username, setUsername] = useState('');
+  const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   return <main className="login-page"><div className="login-decoration"><div className="orb orb-one" /><div className="orb orb-two" /><div className="login-signal"><Monitor size={40} /><div className="signal-line" /><Radio size={30} /></div></div>
-    <section className="login-card"><Logo /><div className="eyebrow">桌面 AI · 随时连接</div><h1>你的 AI，<br />随时继续。</h1><p>离开电脑，也能看到新的回复、取走完成的文件，接着推进下一步。</p>
-      <form onSubmit={async e => { e.preventDefault(); setBusy(true); setError(''); try { const s = await login(username, password); setPassword(''); onLogin(s.device); } catch (e) { setError(errorText(e)); } finally { setBusy(false); } }}>
-        <label>账号<input autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required /></label>
-        <label>访问密码<input type="password" autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} required placeholder="输入你的 AIRemote 密码" /></label>
-        {error && <p role="alert" className="error-text">{error}</p>}<button className="primary full" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <ArrowUpRight size={18} />}连接我的 Mac</button>
-      </form><div className="login-foot"><ShieldCheck size={15} />私有服务 · 加密连接 · 仅授权对话</div>
-    </section><span className="login-copyright">AIRemote / 从这里，继续创造。</span></main>;
+    <section className="login-card"><Logo /><h1>{registering ? '创建账号' : '登录 AIRemote'}</h1>
+      <form onSubmit={async event => {
+        event.preventDefault(); setBusy(true); setError('');
+        try {
+          const identity = registering ? await register(code.trim(), password) : await login(username.trim(), password);
+          setPassword(''); setCode(''); onLogin(identity, registering);
+        } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
+      }}>
+        {registering ? <label>邀请码<input value={code} onChange={e => setCode(e.target.value)} required autoComplete="off" autoCapitalize="none" spellCheck={false} /></label>
+          : <label>账号<input autoComplete="username" value={username} onChange={e => setUsername(e.target.value)} required /></label>}
+        <label>{registering ? '设置密码' : '访问密码'}<input type="password" autoComplete={registering ? 'new-password' : 'current-password'} minLength={registering ? 12 : undefined} maxLength={1024} value={password} onChange={e => setPassword(e.target.value)} required /></label>
+        {error && <p role="alert" className="error-text">{error}</p>}<button className="primary full" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <ArrowUpRight size={18} />}{registering ? '创建账号' : '登录'}</button>
+      </form>{!registering && <button className="account-login-switch" onClick={() => { setRegistering(true); setPassword(''); setError(''); }} disabled={busy}>使用邀请码</button>}
+      {registering && <button className="account-login-switch" onClick={() => { setRegistering(false); setPassword(''); setError(''); }} disabled={busy}>已有账号，去登录</button>}
+    </section></main>;
 }
 
 const providerNames: Record<ProviderId, string> = { codex: 'Codex', deepseek: 'DeepSeek', claude: 'Claude' };
@@ -77,12 +88,11 @@ const selectedChat = () => location.hash.slice(1).replace(/^(codex|deepseek|clau
 function ProviderMark({ id, className = '' }: { id: ProviderId; className?: string }) {
   return <img className={className} src={`/providers/${id}.png`} alt="" />;
 }
-function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDrawerOpen }: { providerId: ProviderId; switchProvider: (id: ProviderId) => void; drafts: Record<string, string>; setDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>; drawerOpen: boolean; setDrawerOpen: React.Dispatch<React.SetStateAction<boolean>> }) {
+function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts, drawerOpen, setDrawerOpen }: { identity: RelaySession; onLogout: () => void; providerId: ProviderId; switchProvider: (id: ProviderId) => void; drafts: Record<string, string>; setDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>; drawerOpen: boolean; setDrawerOpen: React.Dispatch<React.SetStateAction<boolean>> }) {
   const providerName = providerNames[providerId];
   const bridge = <T,>(path: string, method = 'GET', body: object = {}, key?: string) => remoteBridge<T>(providerPath(providerId, path), method, body, key);
   const bridgeResponse = (path: string) => remoteBridgeResponse(providerPath(providerId, path));
-  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
-  const [hostDevice, setDevice] = useState<Device>({ online: false, connectorOnline: false });
+  const [hostDevice, setDevice] = useState<Device>(identity.device);
   const [providers, setProviders] = useState<Provider[]>([]);
   const provider = providers.find(item => item.id === providerId);
   const device = { ...hostDevice, connectorOnline: hostDevice.online && hostDevice.connectorOnline && !!provider?.readable };
@@ -168,7 +178,7 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
     return () => { media.removeEventListener('change', resize); window.visualViewport?.removeEventListener('resize', viewport); window.removeEventListener('resize', viewport); };
   }, []);
   useEffect(() => {
-    if (!mobile || !drawerOpen || !authenticated) return;
+    if (!mobile || !drawerOpen) return;
     drawerRef.current?.focus({ preventScroll: true });
     const keyboard = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { event.preventDefault(); closeDrawer(); return; }
@@ -180,15 +190,12 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
     };
     document.addEventListener('keydown', keyboard);
     return () => document.removeEventListener('keydown', keyboard);
-  }, [mobile, drawerOpen, authenticated]);
+  }, [mobile, drawerOpen]);
 
   useEffect(() => {
     const handler = () => { const id = selectedChat(); reader.current.select(id); selectionRef.current = id; setSelected(id); setFilesOpen(false); };
-    const out = () => setAuthenticated(false);
     window.addEventListener('hashchange', handler);
-    window.addEventListener('airemote:logout', out);
-    session().then(s => { setAuthenticated(true); setDevice(s.device); }).catch(() => setAuthenticated(false));
-    return () => { reader.current.invalidate(); window.removeEventListener('hashchange', handler); window.removeEventListener('airemote:logout', out); };
+    return () => { reader.current.invalidate(); window.removeEventListener('hashchange', handler); };
   }, []);
   useEffect(() => { const timer = window.setTimeout(() => setToast(''), 4000); return () => clearTimeout(timer); }, [toast]);
   const notifyError = (e: unknown) => setError(errorText(e));
@@ -316,7 +323,6 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
     else { setFilesOpen(true); setError('这份文件暂未关联到可下载的授权产物。'); }
   }
   useEffect(() => {
-    if (!authenticated) return;
     let live = true;
     const poll = async () => {
       if (document.hidden) return;
@@ -324,9 +330,9 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
     };
     poll(); const timer = setInterval(poll, 5000);
     return () => { live = false; clearInterval(timer); };
-  }, [authenticated]);
+  }, []);
   useEffect(() => {
-    if (!authenticated || !hostDevice.online) return;
+    if (!hostDevice.online) return;
     let cancelled = false, running = false;
     const poll = async () => {
       if (cancelled || running || document.hidden) return;
@@ -339,18 +345,18 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
     const visible = () => { if (!document.hidden) poll(); };
     document.addEventListener('visibilitychange', visible);
     return () => { cancelled = true; clearInterval(timer); document.removeEventListener('visibilitychange', visible); };
-  }, [authenticated, hostDevice.online]);
+  }, [hostDevice.online]);
   useEffect(() => {
-    if (!authenticated || !device.connectorOnline) return;
+    if (!device.connectorOnline) return;
     // Only the project directory is fetched on connection; no chat or history prefetch.
     loadProjects().then(current => {
       if (!window.matchMedia('(max-width: 700px)').matches || drawerOpenRef.current) {
         for (const project of current) if (expandedProjectsRef.current.has(project.id)) loadProject(project.id);
       }
     });
-  }, [authenticated, device.connectorOnline]);
+  }, [device.connectorOnline, hostDevice.catalogRevision]);
   useEffect(() => {
-    if (!authenticated || !device.connectorOnline || !expandedProjects.size) return;
+    if (!device.connectorOnline || !expandedProjects.size) return;
     let cancelled = false, inFlight = false;
     const mobile = window.matchMedia('(max-width: 700px)');
     const poll = async () => {
@@ -364,7 +370,7 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
     document.addEventListener('visibilitychange', visible);
     mobile.addEventListener('change', visible);
     return () => { cancelled = true; clearInterval(timer); document.removeEventListener('visibilitychange', visible); mobile.removeEventListener('change', visible); };
-  }, [authenticated, device.connectorOnline, expandedProjects, selected, drawerOpen]);
+  }, [device.connectorOnline, expandedProjects, selected, drawerOpen]);
   useEffect(() => {
     selectionRef.current = selected; pageLoadedRef.current = false; olderCursorRef.current = null; atLatestRef.current = true;
     messagesRef.current = []; pendingLatest.current = null; setHasNewMessages(false); setSyncErrors({});
@@ -377,14 +383,14 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
     setReceipt(current => current?.result?.threadId === selected ? current : null);
   }, [selected]);
   useEffect(() => {
-    if (!authenticated || !selected || !device.connectorOnline || mobile && drawerOpen) return;
+    if (!selected || !device.connectorOnline || mobile && drawerOpen) return;
     const poll = (initial = false) => { if (!document.hidden) loadDetail(selected, !initial); };
     const visible = () => { if (!document.hidden) poll(); };
     poll(true);
     const timer = window.setInterval(() => poll(), 2500);
     document.addEventListener('visibilitychange', visible);
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', visible); };
-  }, [selected, authenticated, device.connectorOnline, mobile, drawerOpen]);
+  }, [selected, device.connectorOnline, mobile, drawerOpen]);
   useLayoutEffect(() => {
     const restore = scrollRestore.current, element = scrollRef.current;
     if (restore && element && restore.threadId === selected) {
@@ -395,10 +401,10 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
     if (followLatest && !scrollRestore.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'instant' });
   }, [messages, followLatest, queue.length]);
   useEffect(() => {
-    if (filesOpen && authenticated && selected && device.connectorOnline) loadFiles(selected);
-  }, [filesOpen, selected, authenticated, device.connectorOnline]);
+    if (filesOpen && selected && device.connectorOnline) loadFiles(selected);
+  }, [filesOpen, selected, device.connectorOnline]);
   useEffect(() => {
-    if (!receipt?.operationId || !selected || receipt.result?.threadId !== selected || !authenticated || !device.connectorOnline || ['failed', 'outcome_unknown'].includes(receipt.requestStatus) || ['completed', 'failed', 'interrupted'].includes(receipt.delivery?.turnStatus || '') || mobile && drawerOpen) return;
+    if (!receipt?.operationId || !selected || receipt.result?.threadId !== selected || !device.connectorOnline || ['failed', 'outcome_unknown'].includes(receipt.requestStatus) || ['completed', 'failed', 'interrupted'].includes(receipt.delivery?.turnStatus || '') || mobile && drawerOpen) return;
     let cancelled = false, running = false;
     const poll = async () => {
       if (running || document.hidden) return;
@@ -408,7 +414,7 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
     };
     const timer = setInterval(poll, 3500); poll();
     return () => { cancelled = true; clearInterval(timer); };
-  }, [receipt?.operationId, receipt?.requestStatus, receipt?.delivery?.turnStatus, selected, authenticated, device.connectorOnline, mobile, drawerOpen]);
+  }, [receipt?.operationId, receipt?.requestStatus, receipt?.delivery?.turnStatus, selected, device.connectorOnline, mobile, drawerOpen]);
 
   async function mutate(path: string, method: string, body: object, label: string) {
     if (busy) return null;
@@ -489,13 +495,10 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
   const visibleMessages = filterVisibleMessages(messages, expanded, stat.tone === 'green' ? thread?.turns[0]?.turn_id : undefined);
   const commentaryCount = messages.length - messages.filter(m => m.phase !== 'commentary').length;
 
-  if (authenticated === null) return <div className="boot"><Logo /><LoaderCircle className="spin" /><span>连接你的工作空间…</span></div>;
-  if (!authenticated) return <Login onLogin={d => { setAuthenticated(true); setDevice(d); }} />;
-
   return <div className={`app ${selected ? 'has-selection' : ''} ${drawerOpen ? 'drawer-open' : ''}`}>
     {mobile && <button className="drawer-backdrop" aria-label="关闭对话侧栏遮罩" aria-hidden={!drawerOpen} tabIndex={-1} onClick={closeDrawer} />}
     <aside ref={drawerRef} id="conversation-sidebar" className="sidebar" role={mobile ? 'dialog' : undefined} aria-label={mobile ? '项目与对话侧栏' : undefined} aria-modal={mobile && drawerOpen ? true : undefined} aria-hidden={mobile && !drawerOpen ? true : undefined} inert={mobile && !drawerOpen ? true : undefined} tabIndex={-1}>
-      <div className="sidebar-top"><Logo /><span className="version-tag">BETA</span><button className="icon-button drawer-close" aria-label="关闭对话侧栏" onClick={closeDrawer}><X size={21} /></button></div>
+      <div className="sidebar-top"><Logo /><a className="icon-button" href="/account" aria-label="账号与设备" title="账号与设备"><Monitor size={19} /></a><button className="icon-button drawer-close" aria-label="关闭对话侧栏" onClick={closeDrawer}><X size={21} /></button></div>
       <section className="provider-strip" aria-label="AI 客户端连接"><div className="provider-switcher" role="group" aria-label="切换 AI 客户端">{providerIds.map(id => {
         const item = providers.find(p => p.id === id); const online = device.online && !!item?.connected;
         const status = online ? '已连接' : device.online ? item?.statusLabel || '检查中' : 'Mac 离线';
@@ -523,12 +526,12 @@ function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDra
           </section>;
         }) : <div className="list-empty"><Folder size={30} /><strong>{search ? '没有匹配的项目' : device.connectorOnline ? '这里还没有项目' : '等待 Mac 连接'}</strong><span>{device.connectorOnline ? `在 Mac ${providerName} 中添加项目后刷新` : 'Mac 上的连接器会主动连接这里'}</span></div>}
       </div>
-      <div className="sidebar-footer compact-footer"><button className="icon-button" aria-label="退出登录" title="退出登录" onClick={async () => { try { await logout(); setAuthenticated(false); } catch (e) { notifyError(e); } }}><LogOut size={18} /></button></div>
+      <div className="sidebar-footer compact-footer"><button className="icon-button" aria-label="退出登录" title="退出登录" onClick={async () => { try { await logout(); onLogout(); } catch (e) { notifyError(e); } }}><LogOut size={18} /></button></div>
     </aside>
     <main className={`workspace ${!selected ? 'empty-workspace' : ''}`} inert={mobile && drawerOpen ? true : undefined} aria-hidden={mobile && drawerOpen ? true : undefined}>
       {!selected ? <>
         <header className="welcome-top"><button className="icon-button drawer-trigger" data-drawer-trigger aria-label="打开项目与对话" aria-controls="conversation-sidebar" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu size={23} /></button><span><i className={`dot ${device.connectorOnline ? 'green' : 'muted'}`} />{device.connectorOnline ? '与 Mac 保持连接' : '等待 Mac 上线'}</span>{window.AIRemoteAndroid ? <button className="icon-button" aria-label="Android 应用设置与更新" onClick={() => window.AIRemoteAndroid?.openSettings()}><MoreHorizontal size={19} /></button> : <span>你的 AI，随时继续</span>}</header>
-        <div className="welcome"><div className="welcome-art"><div className="art-orbit one" /><div className="art-orbit two" /><div className="art-core"><Terminal size={42} /></div><span className="art-spark"><Sparkles size={21} /></span><span className="art-status"><i className={`dot ${device.connectorOnline ? 'green' : 'muted'}`} />{device.connectorOnline ? '已就绪' : '等待连接'}</span></div><div className="eyebrow">从这里，继续创造</div><h1>离开桌面，<br />思路继续。</h1><p>从左上角选择一个对话，继续你的工作。</p><button className="primary" disabled={!canCreate || !workspaces.length} onClick={showNewChat}><Plus size={18} />新建对话</button>
+        <div className="welcome"><div className="welcome-art"><div className="art-orbit one" /><div className="art-orbit two" /><div className="art-core"><Terminal size={42} /></div><span className="art-spark"><Sparkles size={21} /></span><span className="art-status"><i className={`dot ${device.connectorOnline ? 'green' : 'muted'}`} />{device.connectorOnline ? '已就绪' : '等待连接'}</span></div><div className="eyebrow">从这里，继续创造</div><h1>离开桌面，<br />思路继续。</h1><p>{hostDevice.deviceCount === 0 ? '配对你的 Mac 后会显示各 AI 客户端的项目。' : '从左上角选择一个对话，继续你的工作。'}</p>{hostDevice.deviceCount === 0 ? <a href="/account" className="primary">配对 Mac</a> : <button className="primary" disabled={!canCreate || !workspaces.length} onClick={showNewChat}><Plus size={18} />新建对话</button>}
           <div className="feature-strip"><span><Activity size={16} />实时状态</span><span><FileText size={16} />回复与文件</span><span><ListOrdered size={16} />原生队列</span></div></div>
       </> : <>
         <header className="conversation-header">
@@ -814,7 +817,7 @@ function NewChat({ providerName, requiresMessage, workspaces, defaultWorkspace, 
   return <Modal title="开始一个新对话" close={close}><p className="modal-description">在你的 Mac 上创建真实 {providerName} 对话。它会保存在本机对话库中。</p><form onSubmit={e => { e.preventDefault(); submit({ title, cwd, text }); }}><label>对话名称<input autoFocus placeholder="例如：完成登录页面" value={title} onChange={e => setTitle(e.target.value)} required maxLength={120} /></label><label>工作目录<select aria-label="新对话工作目录" value={cwd} onChange={e => setCwd(e.target.value)} required>{workspaces.map(w => <option key={w} value={w}>{w}</option>)}</select><small>使用 Mac 连接器已授权的项目目录</small></label><label>第一条指令 {!requiresMessage && <span className="optional">可选</span>}<textarea required={requiresMessage} placeholder={`告诉 ${providerName} 想完成什么…`} value={text} onChange={e => setText(e.target.value)} rows={4} /></label>{error && <p role="alert" className="error-text">{error}</p>}<div className="modal-actions"><button type="button" className="secondary" onClick={close}>取消</button><button className="primary" disabled={busy || !title.trim() || !cwd || requiresMessage && !text.trim()}>{busy ? <LoaderCircle className="spin" size={17} /> : <Plus size={17} />}创建对话</button></div></form></Modal>;
 }
 
-function AIRemote() {
+function Workspace({ identity, onLogout }: { identity: RelaySession; onLogout: () => void }) {
   const initialProvider = (): ProviderId => {
     if (location.hash.length > 1) return routeProvider() || 'codex';
     const saved = localStorage.getItem('airemote:provider');
@@ -835,6 +838,24 @@ function AIRemote() {
   };
   // Remounting gives each provider its own requests, draft, cursor and poll lifetime.
   const setDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>> = value => setDraftsByProvider(previous => ({ ...previous, [providerId]: typeof value === 'function' ? value(previous[providerId]) : value }));
-  return <App key={providerId} providerId={providerId} switchProvider={switchProvider} drafts={draftsByProvider[providerId]} setDrafts={setDrafts} drawerOpen={drawerOpen} setDrawerOpen={setDrawerOpen} />;
+  return <App key={providerId} identity={identity} onLogout={onLogout} providerId={providerId} switchProvider={switchProvider} drafts={draftsByProvider[providerId]} setDrafts={setDrafts} drawerOpen={drawerOpen} setDrawerOpen={setDrawerOpen} />;
+}
+function AIRemote() {
+  const [identity, setIdentity] = useState<RelaySession | null>();
+  const expire = () => { forgetSession(); setIdentity(null); };
+  useEffect(() => {
+    let active = true;
+    window.addEventListener('airemote:logout', expire);
+    session().then(value => { if (active) setIdentity(value); }).catch(() => { if (active) setIdentity(null); });
+    return () => { active = false; window.removeEventListener('airemote:logout', expire); };
+  }, []);
+  if (identity === undefined) return <div className="boot"><Logo /><LoaderCircle className="spin" /><span>连接你的工作空间…</span></div>;
+  const path = location.pathname;
+  if (!identity || path === '/register') return <Login initialRegistration={path === '/register'} onLogin={(value, registered) => {
+    if (registered || path === '/register') history.replaceState(null, '', '/account');
+    setIdentity(value);
+  }} />;
+  if (path === '/account' || path === '/admin') return <ManagementPage key={identity.accountId || identity.username} identity={identity} admin={path === '/admin' && identity.isAdmin === true} />;
+  return <Workspace key={identity.accountId || identity.username} identity={identity} onLogout={expire} />;
 }
 createRoot(document.getElementById('root')!).render(<AIRemote />);
