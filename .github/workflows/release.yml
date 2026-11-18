@@ -131,6 +131,7 @@ jobs:
           cat > release-notes.md <<'NOTES'
           手机查看和继续 Mac 上的 Codex、DeepSeek Harness 和 Claude Code 对话。
 
+          - Mac 启动时自动使用保存的配置目录。配置缺失或权限受限时，窗口显示实际尝试读取的位置，并提供“配置文件夹…”入口。
           - Claude Code 本地会话：侧栏切换，查看消息、真实运行状态、关联文件及历史。配置 CLI API 凭据后，可继续已关闭的同一会话或新建。
           - Android：Flutter 跨平台客户端，界面直接由 Flutter 渲染，已移除 WebView 页面。保留原包名和长期签名，可覆盖升级（Android 8+）；首次填写自己的 HTTPS 中继地址。iOS 工程使用同一套 Dart 界面，已加入模拟器构建验证。
           - Mac：解压 AIRemote-macos.zip，将应用放入 /Applications 或 ~/Applications。Intel / Apple Silicon 通用；支持 GitHub 更新并保留私有配置。此构建采用 ad-hoc 签名，尚未经过 Apple 公证。

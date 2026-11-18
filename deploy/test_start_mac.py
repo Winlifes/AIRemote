@@ -83,6 +83,23 @@ class StartupTests(unittest.TestCase):
         self.assertEqual(first['running'], second['running'])
         self.assertEqual(second['started'], [])
 
+    def test_unavailable_configuration_reports_the_known_path_and_reason(self):
+        backup = self.config.rename(self.config.with_suffix('.backup'))
+        try:
+            missing = self.run_launcher('--status')
+        finally:
+            backup.rename(self.config)
+        self.assertEqual(missing.returncode, os.EX_NOINPUT)
+        self.assertIn(str(self.config), missing.stderr)
+        self.config.chmod(0o644)
+        try:
+            denied = self.run_launcher()
+        finally:
+            self.config.chmod(0o600)
+        self.assertEqual(denied.returncode, os.EX_NOPERM)
+        self.assertIn('0600', denied.stderr)
+        self.assertFalse((self.private / 'mac-processes.json').exists())
+
     def test_status_is_read_only_and_never_launches_processes(self):
         before=self.run_launcher('--status')
         self.assertEqual(before.returncode,0,before.stderr)

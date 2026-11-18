@@ -73,11 +73,26 @@ def recorded_scripts(config_path, cfg, fallback):
     return scripts
 
 
+class ConfigUnavailable(RuntimeError):
+    def __init__(self, exit_code, message):
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+def read_runtime_config(location):
+    try:
+        path = Path(location).resolve(strict=True)
+        if path.stat().st_mode & 0o077:
+            raise PermissionError('启动配置文件需要设为仅本人可读写（0600）。')
+        return path, json.loads(path.read_text())
+    except FileNotFoundError as error:
+        raise ConfigUnavailable(os.EX_NOINPUT, f'未找到启动配置文件\n{location}') from error
+    except PermissionError as error:
+        raise ConfigUnavailable(os.EX_NOPERM, str(error)) from error
+
+
 def start_services(config_path, restart=False, stop=False, startup_timeout=20, runtime_root=None):
-    config_path = Path(config_path).resolve(strict=True)
-    if config_path.stat().st_mode & 0o077:
-        raise PermissionError('Runtime config must have mode 0600')
-    cfg = json.loads(config_path.read_text())
+    config_path, cfg = read_runtime_config(config_path)
     project = Path(cfg['project']).resolve(strict=True)
     private = config_path.parent
     logs = private / 'logs'; logs.mkdir(mode=0o700, exist_ok=True)
@@ -107,10 +122,7 @@ def start_services(config_path, restart=False, stop=False, startup_timeout=20, r
 
 
 def service_status(config_path, runtime_root=None):
-    config_path = Path(config_path).resolve(strict=True)
-    if config_path.stat().st_mode & 0o077:
-        raise PermissionError('Runtime config must have mode 0600')
-    cfg = json.loads(config_path.read_text())
+    config_path, cfg = read_runtime_config(config_path)
     project = Path(cfg['project']).resolve(strict=True)
     pid_path = config_path.parent / 'mac-processes.json'
     recorded = json.loads(pid_path.read_text()) if pid_path.exists() else {}
@@ -211,4 +223,4 @@ if __name__ == '__main__':
         main()
     except Exception as error:
         print('AIRemote 启动失败：' + str(error), file=sys.stderr, flush=True)
-        sys.exit(1)
+        sys.exit(error.exit_code if isinstance(error, ConfigUnavailable) else 1)

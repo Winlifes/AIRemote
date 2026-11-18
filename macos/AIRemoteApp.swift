@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Darwin
 
 struct ClientStatus: Decodable, Identifiable {
     let id: String
@@ -54,6 +55,7 @@ struct GoalChannelStatus: Decodable {
     }
     private var checking = false
     private var launched = false
+    private var configurationBlocked = false
 
     var project: URL {
         let saved = UserDefaults.standard.string(forKey: "ProjectDirectory")
@@ -64,29 +66,24 @@ struct GoalChannelStatus: Decodable {
     var config: URL { project.appendingPathComponent(".local/mac-runtime.json") }
     var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0" }
     var runtime: URL { Bundle.main.resourceURL!.appendingPathComponent("runtime", isDirectory: true) }
-    var needsFolderAccess: Bool {
-        let home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/AIRemote").path
-        return project.path != home && UserDefaults.standard.string(forKey: "FolderAccessVersion") != version + ":" + project.path
-    }
 
     func launch() {
         guard !launched else { return }
         launched = true
         checkIfDue()
-        if needsFolderAccess {
-            message = "请选择原配置文件夹，确认此版本的访问权限"
-            chooseProject(startAfter: true)
-        } else { run(action: nil) }
+        run(action: nil)
     }
 
     func refresh() {
         checkIfDue()
-        guard !busy && !checking && !needsFolderAccess else { return }
+        guard !busy && !checking && !configurationBlocked else { return }
         checking = true
         let directory = project
         Task {
             defer { checking = false }
             let result = await Self.execute(directory: directory, runtime: runtime, action: "--status")
+            guard directory == project && !busy else { return }
+            if showConfigurationFailure(result, directory: directory) { return }
             if result.0 == 0, let data = result.1.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
                let value = try? JSONDecoder().decode(RuntimeStatus.self, from: data) {
                 status = value
@@ -102,7 +99,7 @@ struct GoalChannelStatus: Decodable {
 
     func run(action: String?) {
         guard !busy else { return }
-        if needsFolderAccess { chooseProject(startAfter: true); return }
+        configurationBlocked = false
         busy = true; error = nil
         message = action == "--stop" ? "正在停止服务…" : "正在启动服务…"
         let directory = project
@@ -111,28 +108,40 @@ struct GoalChannelStatus: Decodable {
             busy = false
             if result.0 == 0 {
                 message = action == "--stop" ? "服务已停止" : "服务已启动，可以从手机继续工作"
-            } else {
+            } else if !showConfigurationFailure(result, directory: directory) {
                 message = "操作未完成"
-                error = String(result.1.suffix(1600))
+                error = "当前配置目录\n\(directory.path)\n\n" + String(result.1.suffix(1200))
             }
             refresh()
         }
     }
 
-    func chooseProject(startAfter: Bool = false) {
+    private func showConfigurationFailure(_ result: (Int32, String), directory: URL) -> Bool {
+        guard result.0 == EX_NOINPUT || result.0 == EX_NOPERM else { return false }
+        configurationBlocked = true
+        status = RuntimeStatus()
+        message = result.0 == EX_NOINPUT ? "未找到启动配置" : "无法读取启动配置"
+        let hint = result.0 == EX_NOINPUT ? "点击“配置文件夹…”以选择原来的位置。"
+            : "如有 macOS 权限提示，请确认后重试。也可以用“配置文件夹…”打开保存的位置。"
+        error = "当前配置目录\n\(directory.path)\n\n\(hint)\n" + String(result.1.suffix(1000))
+        return true
+    }
+
+    func chooseProject() {
+        guard !busy && !updating else { return }
         let panel = NSOpenPanel()
-        panel.title = "选择 AIRemote 项目文件夹"
-        panel.message = "选择包含 .local/mac-runtime.json 的原配置文件夹。应用更新后，macOS 需要重新确认此目录的访问权限。"
+        panel.title = "AIRemote 配置文件夹"
+        panel.message = "当前配置位置\n\(project.path)\n\n可以使用此文件夹，或选择另一处已有的配置目录。"
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
         panel.directoryURL = project
         guard panel.runModal() == .OK, let chosen = panel.url else { return }
         guard FileManager.default.fileExists(atPath: chosen.appendingPathComponent(".local/mac-runtime.json").path) else {
-            error = "这个文件夹中没有 AIRemote 启动配置。"; return
+            error = "这个文件夹中读不到 AIRemote 启动配置。\n\(chosen.path)"; return
         }
+        if chosen != project { status = RuntimeStatus() }
         UserDefaults.standard.set(chosen.path, forKey: "ProjectDirectory")
-        UserDefaults.standard.set(version + ":" + chosen.path, forKey: "FolderAccessVersion")
         error = nil
-        if startAfter { run(action: nil) } else { refresh() }
+        if configurationBlocked { run(action: nil) } else { refresh() }
     }
 
     func openWeb() {
@@ -242,7 +251,7 @@ struct GoalChannelStatus: Decodable {
                 let output = pipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
                 if process.terminationStatus == 15 || process.terminationStatus == -15 {
-                    return (-1, "操作超时。请用右下角按钮重新选择原配置文件夹，确认目录访问权限后重试。")
+                    return (-1, "操作超时，请检查是否有系统权限提示，然后重试。")
                 }
                 return (process.terminationStatus, String(data: output, encoding: .utf8) ?? "无法读取启动结果")
             } catch {
@@ -337,7 +346,8 @@ struct ControlView: View {
             HStack(alignment: .top) {
                 Text("关闭窗口后服务继续运行。\n需要停止时，点击“停止服务”。").font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4).fixedSize(horizontal: false, vertical: true)
                 Spacer()
-                Button { model.chooseProject() } label: { Image(systemName: "folder.badge.gearshape") }.buttonStyle(.plain).help("选择项目文件夹").disabled(model.busy)
+                Button("配置文件夹…") { model.chooseProject() }
+                    .controlSize(.small).help(model.project.path).disabled(model.busy || model.updating)
             }
         }
         .padding(28).frame(width: 420)
