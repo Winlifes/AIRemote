@@ -92,9 +92,7 @@ class _ComposerDockState extends State<ComposerDock> {
     };
     final result = state.receipt['result'] as Map?;
     final delivery = state.receipt['delivery'] as Map?;
-    final writeMessage = state.provider == 'claude'
-        ? (state.chat?['writeMessage'])?.toString()
-        : null;
+    final writeMessage = state.chat?['writeMessage']?.toString();
     final deliveryText = state.receipt['requestStatus'] == 'failed'
         ? ((result?['error'])?.toString() ?? '指令未执行')
         : state.receipt['requestStatus'] == 'outcome_unknown'

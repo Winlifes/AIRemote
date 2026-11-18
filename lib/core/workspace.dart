@@ -153,9 +153,11 @@ class Workspace extends ChangeNotifier {
   bool get _canOperate => online && descriptor['connected'] == true && !busy;
   bool supports(String feature) =>
       (descriptor['features'] as List? ?? []).contains(feature);
-  bool get supportsQueue => provider != 'claude';
+  bool get supportsQueue =>
+      provider != 'claude' && chat?['queueAvailable'] != false;
   bool get canWrite =>
       _canOperate &&
+      chat?['writeAvailable'] != false &&
       supports('send') &&
       (provider != 'claude' ||
           chat?['writeAvailable'] == true &&
@@ -164,7 +166,11 @@ class Workspace extends ChangeNotifier {
       _canOperate &&
       (provider == 'claude' ? supports('create') : supports('send'));
   List<String> get createPaths => projects
-      .where((project) => provider != 'claude' || project['writable'] == true)
+      .where(
+        (project) => provider == 'claude'
+            ? project['writable'] == true
+            : project['writable'] != false,
+      )
       .expand(
         (project) => (project['roots'] as List? ?? []).whereType<String>(),
       )

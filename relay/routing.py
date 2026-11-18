@@ -1,7 +1,7 @@
 """Merge account-owned device catalogs and route each action to its native Mac."""
 
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import sqlite3
 import time
@@ -34,7 +34,7 @@ def combined_state(devices):
         'deviceCount': len(devices),
         'onlineCount': sum(row['connectorOnline'] for row in devices),
         'catalogRevision': digest(','.join(sorted(row['id'] for row in devices if row['connectorOnline'])))[:16],
-        'name': devices[0]['name'] if len(devices) == 1 else '我的 Mac',
+        'name': devices[0]['name'] if len(devices) == 1 else '我的设备',
     }
 
 
@@ -79,7 +79,7 @@ class Router:
         for device in self.accounts.devices(account, include_revoked):
             current = self.stores(device['id']).device() if not device['revoked'] else {}
             name = current.get('name', device['name']) if device['id'] == LEGACY_DEVICE else device['name']
-            results.append({'id': device['id'], 'account': device['account'], 'name': name,
+            results.append({'id': device['id'], 'account': device['account'], 'name': name, 'platform': device['platform'],
                             'createdAt': device['created'], 'revoked': device['revoked'] is not None,
                             'online': current.get('online', False), 'connectorOnline': current.get('connectorOnline', False),
                             'lastSeen': current.get('last_seen')})
@@ -90,7 +90,7 @@ class Router:
         provider, prefix, local = endpoint(path)
         online = [row['id'] for row in devices if row['connectorOnline']]
         if not online:
-            raise Unavailable('没有在线的 Mac，请在账号设置中配对设备或启动桌面连接器。')
+            raise Unavailable('没有在线的电脑，请在账号设置中配对设备或启动桌面连接器。')
         if method == 'GET' and local in CATALOGS:
             return True, {device: path for device in online}
         if local == '/threads' and method == 'POST':
@@ -102,7 +102,7 @@ class Router:
             if target is None and not known and len(online) == 1:
                 target = online[0]
             if target is None:
-                raise Unavailable('此工作目录所在的 Mac 未就绪，请刷新项目后重试。')
+                raise Unavailable('此工作目录所在的电脑未就绪，请刷新项目后重试。')
             return False, {target: path}
         match = re.fullmatch(r'/(projects|threads|operations)/((?:session-)?' + UUID + r')(/.*)?', local)
         if not match:
@@ -120,7 +120,7 @@ class Router:
         routed = {device: f'{prefix}/{kind}/{native}{suffix}' + ('?' + query if query else '')
                   for device, native in targets.items() if device in online}
         if not routed:
-            raise Unavailable('这个对话所在的 Mac 暂时离线。')
+            raise Unavailable('这个对话所在的电脑暂时离线。')
         return kind == 'projects', routed
 
     def submit(self, account, request):
@@ -155,7 +155,7 @@ class Router:
                     if not aggregate:
                         raise
         if not queued:
-            raise Unavailable('没有可处理此请求的 Mac。')
+            raise Unavailable('没有可处理此请求的电脑。')
         return self.status(account, rid)
 
     def route(self, account, rid):
@@ -304,7 +304,7 @@ class Router:
                         current['writable'] = current['writable'] or writable
                         directory_list = roots.setdefault(public, [])
                         for path in project.get('roots', []):
-                            if not isinstance(path, str) or not path.startswith('/'):
+                            if not isinstance(path, str) or not (path.startswith('/') or PureWindowsPath(path).is_absolute()):
                                 continue
                             if path not in directory_list:
                                 directory_list.append(path)

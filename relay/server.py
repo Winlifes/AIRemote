@@ -389,7 +389,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.open_session(accounts.authenticate(value.get('username'), value.get('password')))
             if path == '/api/register':
                 return self.open_session(accounts.register(value.get('code'), value.get('password')))
-            identifier = accounts.claim_pairing(value.get('code'), value.get('tokenHash'), value.get('name'))
+            identifier = accounts.claim_pairing(value.get('code'), value.get('tokenHash'), value.get('name'), value.get('platform', 'macos'))
             return self.respond(200, {'deviceId': identifier})
         if path.startswith('/api/agent/'):
             return self.agent_route(path)

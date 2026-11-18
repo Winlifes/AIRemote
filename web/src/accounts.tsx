@@ -3,19 +3,19 @@ import { ArrowLeft, Copy, Link2, Monitor, RefreshCw, ShieldCheck } from 'lucide-
 import { api, type RelaySession } from './api';
 import './accounts.css';
 
-type Mac = { id: string; account: string; name: string; online: boolean; connectorOnline: boolean; revoked?: boolean };
+type Computer = { id: string; account: string; name: string; platform: string; online: boolean; connectorOnline: boolean; revoked?: boolean };
 type Account = { id: string; username: string; enabled: number };
 type Invitation = { id: string; username: string; expiresAt: number };
-type Overview = { devices: Mac[]; accounts?: Account[]; invitations?: Invitation[] };
+type Overview = { devices: Computer[]; accounts?: Account[]; invitations?: Invitation[] };
 type Code = { code: string; expiresAt: number; username?: string };
 
 function post<T>(path: string, value: object = {}) {
   return api<T>(path, { method: 'POST', body: JSON.stringify(value) });
 }
 
-function Macs({ devices, revoke, busy }: { devices: Mac[]; revoke: (mac: Mac) => void; busy: boolean }) {
-  if (!devices.length) return <p className="account-muted">还没有配对的 Mac。</p>;
-  return <ul className="account-list">{devices.map(mac => <li key={mac.id}><Monitor size={19} aria-hidden="true" /><div><strong>{mac.name}</strong><small>{mac.revoked ? '已解绑' : mac.connectorOnline ? '已连接' : mac.online ? '连接器未就绪' : '离线'}</small></div>{!mac.revoked && <button type="button" className="account-text-button" disabled={busy} onClick={() => revoke(mac)}>解绑</button>}</li>)}</ul>;
+function Computers({ devices, revoke, busy }: { devices: Computer[]; revoke: (computer: Computer) => void; busy: boolean }) {
+  if (!devices.length) return <p className="account-muted">还没有配对的电脑。</p>;
+  return <ul className="account-list">{devices.map(mac => <li key={mac.id}><Monitor size={19} aria-hidden="true" /><div><strong>{mac.name}</strong><small>{mac.platform === 'windows' ? 'Windows' : 'Mac'} · {mac.revoked ? '已解绑' : mac.connectorOnline ? '已连接' : mac.online ? '连接器未就绪' : '离线'}</small></div>{!mac.revoked && <button type="button" className="account-text-button" disabled={busy} onClick={() => revoke(mac)}>解绑</button>}</li>)}</ul>;
 }
 
 export function ManagementPage({ identity, admin = false }: { identity: RelaySession; admin?: boolean }) {
@@ -45,8 +45,8 @@ export function ManagementPage({ identity, admin = false }: { identity: RelaySes
     catch (e) { setError(e instanceof Error ? e.message : '操作未完成，请重试。'); }
     finally { setBusy(false); }
   }
-  const revoke = (device: Mac) => {
-    if (window.confirm(`解绑 ${device.name}？这台 Mac 需要重新配对才能连接。`)) {
+  const revoke = (device: Computer) => {
+    if (window.confirm(`解绑 ${device.name}？这台电脑需要重新配对才能连接。`)) {
       void action(() => post(`${path}/devices/${device.id}/revoke`));
     }
   };
@@ -58,13 +58,13 @@ export function ManagementPage({ identity, admin = false }: { identity: RelaySes
     <section className="account-card">
       {admin
         ? <form className="account-invite" onSubmit={event => { event.preventDefault(); void generate('/api/admin/invitations', { username }); }}><label>新账号名称<input required minLength={3} maxLength={32} value={username} onChange={event => setUsername(event.target.value)} autoComplete="off" placeholder="例如 lin" /></label><button className="primary" disabled={busy}>生成邀请码</button></form>
-        : <><h2>配对新 Mac</h2><p className="account-muted">在桌面 AIRemote 点「配对 Mac…」，填写此网站地址和配对码。</p><button className="primary" disabled={busy} onClick={() => void generate('/api/account/pairings')}><Link2 size={16} />生成配对码</button></>}
+        : <><h2>配对电脑</h2><p className="account-muted">在电脑端 AIRemote 填写此网站地址和配对码。</p><button className="primary" disabled={busy} onClick={() => void generate('/api/account/pairings')}><Link2 size={16} />生成配对码</button></>}
       {code && <div className="account-code"><div><strong>{code.username ? `${code.username} 的邀请码` : '一次性配对码'}</strong><small>{admin ? '在登录页选择「使用邀请码」' : location.origin} · {new Date(code.expiresAt * 1000).toLocaleString('zh-CN')} 到期</small></div><input aria-label={admin ? '邀请码' : '配对码'} readOnly value={code.code} onFocus={event => event.target.select()} /><button className="secondary" onClick={async () => { try { await navigator.clipboard.writeText(code.code); setCopied(true); } catch { setError('请选中验证码并复制。'); } }}><Copy size={15} />{copied ? '已复制' : '复制'}</button></div>}
     </section>
     {!data && <p className="account-muted" role="status">正在读取…</p>}
     {data && (admin ? <>
       {data.invitations && data.invitations.length > 0 && <section className="account-card"><h2>待使用的邀请码</h2><ul className="account-list">{data.invitations.map(invite => <li key={invite.id}><div><strong>{invite.username}</strong><small>{new Date(invite.expiresAt * 1000).toLocaleString('zh-CN')} 到期</small></div><button className="account-text-button" disabled={busy} onClick={() => void action(async () => { await post(`/api/admin/invitations/${invite.id}/revoke`); if (code?.username === invite.username) setCode(undefined); })}>撤销</button></li>)}</ul></section>}
-      <section className="account-card"><h2>账号和设备</h2>{data.accounts?.map(account => <div className="managed-account" key={account.id}><div className="managed-account-title"><div><strong>{account.username}</strong> <span className="account-muted">{account.id === 'owner' ? '管理员' : account.enabled ? '已启用' : '已停用'}</span></div>{account.id !== 'owner' && <button className="account-text-button" disabled={busy} onClick={() => { if (!account.enabled || window.confirm(`停用 ${account.username}？其网页登录和设备连接会中断。`)) void action(() => post(`/api/admin/accounts/${account.id}/enabled`, { enabled: !account.enabled })); }}>{account.enabled ? '停用账号' : '启用账号'}</button>}</div><Macs devices={data.devices.filter(mac => mac.account === account.id)} revoke={revoke} busy={busy} /></div>)}</section>
-    </> : <section className="account-card"><div className="account-heading"><h2>我的 Mac</h2><button className="icon-button" aria-label="刷新设备" onClick={() => void action(async () => {})} disabled={busy}><RefreshCw size={16} /></button></div><Macs devices={data.devices} revoke={revoke} busy={busy} /></section>)}
+      <section className="account-card"><h2>账号和设备</h2>{data.accounts?.map(account => <div className="managed-account" key={account.id}><div className="managed-account-title"><div><strong>{account.username}</strong> <span className="account-muted">{account.id === 'owner' ? '管理员' : account.enabled ? '已启用' : '已停用'}</span></div>{account.id !== 'owner' && <button className="account-text-button" disabled={busy} onClick={() => { if (!account.enabled || window.confirm(`停用 ${account.username}？其网页登录和设备连接会中断。`)) void action(() => post(`/api/admin/accounts/${account.id}/enabled`, { enabled: !account.enabled })); }}>{account.enabled ? '停用账号' : '启用账号'}</button>}</div><Computers devices={data.devices.filter(mac => mac.account === account.id)} revoke={revoke} busy={busy} /></div>)}</section>
+    </> : <section className="account-card"><div className="account-heading"><h2>我的电脑</h2><button className="icon-button" aria-label="刷新设备" onClick={() => void action(async () => {})} disabled={busy}><RefreshCw size={16} /></button></div><Computers devices={data.devices} revoke={revoke} busy={busy} /></section>)}
   </main>;
 }

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Mac -> relay outbound agent. Local token never leaves the Mac."""
 import argparse
-import fcntl
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -11,8 +10,9 @@ import threading
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from local_lock import exclusive_lock
 from protocol import MAX_RESULT, validate_request
 
 VERSION = (Path(__file__).resolve().parents[1] / 'VERSION').read_text().strip()
@@ -25,14 +25,10 @@ class NoRelayRedirect(HTTPRedirectHandler):
 
 def acquire_agent_lock(config_path):
     lock_path = Path(str(Path(config_path).resolve()) + '.lock')
-    lock = open(lock_path, 'a+')
-    os.chmod(lock_path, 0o600)
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return exclusive_lock(lock_path)
     except OSError as error:
-        lock.close()
         raise RuntimeError('Another AIRemote agent already uses this configuration') from error
-    return lock
 
 
 class Agent:
@@ -47,11 +43,12 @@ class Agent:
             raise ValueError("Connector must use a loopback HTTP URL")
         self.connector = local.geturl().rstrip("/")
         token_path = Path(config["connector_token_file"])
-        if token_path.stat().st_mode & 0o077:
+        if os.name != 'nt' and token_path.stat().st_mode & 0o077:
             raise PermissionError("Connector token must have mode 0600")
         self.local_token = token_path.read_text().strip()
         self.stop = threading.Event()
         self.relay_http = build_opener(NoRelayRedirect)
+        self.connector_http = build_opener(ProxyHandler({}), NoRelayRedirect)
         self.executor = ThreadPoolExecutor(max_workers=6)
         self.jobs = {}
 
@@ -69,7 +66,7 @@ class Agent:
             headers.update({"Content-Type": "application/json", "Idempotency-Key": key})
         request = Request(self.connector + path, data=data, headers=headers, method=method)
         try:
-            response = urlopen(request, timeout=90)
+            response = self.connector_http.open(request, timeout=90)
         except HTTPError as error:
             response = error
         with response:
@@ -156,7 +153,7 @@ def main():
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
     path = Path(args.config)
-    if path.stat().st_mode & 0o077:
+    if os.name != 'nt' and path.stat().st_mode & 0o077:
         raise PermissionError("Agent config must have mode 0600")
     with acquire_agent_lock(path):
         agent = Agent(json.loads(path.read_text()))

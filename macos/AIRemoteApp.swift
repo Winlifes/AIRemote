@@ -153,7 +153,7 @@ struct GoalChannelStatus: Decodable {
     func pairMac(origin: String, code: String, name: String, workspace: URL) async -> String? {
         guard !busy && !updating else { return "正在处理其他操作，请稍后重试。" }
         busy = true; error = nil
-        message = "正在配对 Mac…"
+        message = "正在配对电脑…"
         var startAfter = false
         defer {
             busy = false
@@ -355,7 +355,7 @@ struct ControlView: View {
                 Button("查看日志") { model.openLogs() }.frame(maxWidth: .infinity)
             }.buttonStyle(.bordered).controlSize(.large)
             Button { pairing = true } label: {
-                Label("配对 Mac…", systemImage: "link").frame(maxWidth: .infinity)
+                Label("配对电脑…", systemImage: "link").frame(maxWidth: .infinity)
             }.buttonStyle(.bordered).disabled(model.busy || model.updating)
             VStack(alignment: .leading, spacing: 7) {
                 Button { model.launchGoalChannel() } label: {
@@ -421,7 +421,7 @@ struct PairMacView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("配对 Mac").font(.title2.weight(.semibold))
+            Text("配对电脑").font(.title2.weight(.semibold))
             Text("在网页的「账号与设备」生成配对码。配对将此 Mac 上的 AI 对话接入该账号。")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {

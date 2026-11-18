@@ -15,6 +15,7 @@ export type Thread = {
   goalState?: GoalState;
   writeAvailable?: boolean;
   writeMessage?: string;
+  queueAvailable?: boolean;
 };
 export type Goal = { threadId: string; objective: string; status: 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete'; tokenBudget: number | null; tokensUsed: number; timeUsedSeconds: number; createdAt: number; updatedAt: number };
 export type GoalState = { goal: Goal | null; readable: boolean; writable: boolean; revision: string | null; source: string; message: string };

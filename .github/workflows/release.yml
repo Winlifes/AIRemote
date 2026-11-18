@@ -110,8 +110,19 @@ jobs:
       - uses: ./.github/actions/flutter
       - run: flutter pub get --enforce-lockfile
       - run: flutter build ios --simulator --no-codesign
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: if ((Get-Content VERSION -Raw).Trim().Insert(0,'v') -ne $env:GITHUB_REF_NAME) { throw 'Invalid release tag' }
+      - run: python -m unittest discover -s windows -p 'test_*.py' -q
+      - run: python tools/package_windows.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-release
+          path: dist/AIRemote-windows.zip
   publish:
-    needs: [server, android, macos, ios]
+    needs: [server, android, macos, ios, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -127,11 +138,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd dist
-          sha256sum AIRemote-android.apk AIRemote-macos.zip AIRemote-server.tar.gz ANDROID-SIGNING.txt > SHA256SUMS
+          sha256sum AIRemote-android.apk AIRemote-macos.zip AIRemote-windows.zip AIRemote-server.tar.gz ANDROID-SIGNING.txt > SHA256SUMS
           cat > release-notes.md <<'NOTES'
           手机查看和继续 Mac 上的 Codex、DeepSeek Harness 和 Claude Code 对话。
 
-          - 同一站点可邀请多个账号，各账号可配对多台 Mac。管理员页面支持管理邀请、账号状态和设备绑定。项目和对话按 AI 客户端汇总，实际操作路由到原设备。
+          - 同一站点可邀请多个账号，各账号可配对多台电脑。管理员页面支持管理邀请、账号状态和设备绑定。项目和对话按 AI 客户端汇总，实际操作路由到原设备。
+          - Windows：解压 AIRemote-windows.zip，安装 Python 3.11+（含 Launcher 和 Tcl/Tk），双击 AIRemote.cmd。当前支持配对、读取授权项目中的 Codex 会话和下载关联文件。
           - Mac 启动时自动使用保存的配置目录。配置缺失或权限受限时，窗口显示实际尝试读取的位置，并提供“配置文件夹…”入口。
           - Mac 启动后检查更新，发现新版时弹窗提示。网页、Flutter 和 Mac 管理窗口内置 Claude Desktop 的应用图标。
           - Claude Code 本地会话：侧栏切换，查看消息、真实运行状态、关联文件及历史。配置 CLI API 凭据后，可继续已关闭的同一会话或新建。
@@ -146,4 +158,4 @@ jobs:
 
           安装、配置、签名密钥与自动发布说明见仓库 README。SHA256SUMS 为下载校验，ANDROID-SIGNING.txt 为 APK 签名验证结果。安装包不包含个人账号、服务器凭据或聊天记录。
           NOTES
-          gh release create "$GITHUB_REF_NAME" --verify-tag --latest --title "AIRemote $GITHUB_REF_NAME" --notes-file release-notes.md AIRemote-android.apk AIRemote-macos.zip AIRemote-server.tar.gz ANDROID-SIGNING.txt SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --verify-tag --latest --title "AIRemote $GITHUB_REF_NAME" --notes-file release-notes.md AIRemote-android.apk AIRemote-macos.zip AIRemote-windows.zip AIRemote-server.tar.gz ANDROID-SIGNING.txt SHA256SUMS

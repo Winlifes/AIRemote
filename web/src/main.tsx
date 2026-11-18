@@ -154,11 +154,11 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
   const thread = threads.find(t => t.threadId === selected);
   const draft = drafts[selected] || '';
   const canOperate = device.connectorOnline && !!provider?.connected && !busy;
-  const supportsQueue = providerId !== 'claude';
-  const canWrite = canOperate && !!provider?.features.includes('send') && (supportsQueue || thread?.writeAvailable === true && receipt?.requestStatus !== 'in_flight');
+  const supportsQueue = providerId !== 'claude' && thread?.queueAvailable !== false;
+  const canWrite = canOperate && !!provider?.features.includes('send') && thread?.writeAvailable !== false && (providerId !== 'claude' || thread?.writeAvailable === true && receipt?.requestStatus !== 'in_flight');
   const canCreate = canOperate && !!provider?.features.includes('create');
   const stat = runtime(syncErrors.thread ? undefined : thread);
-  const writableProjects = projects.filter(project => providerId !== 'claude' || project.writable === true);
+  const writableProjects = projects.filter(project => providerId === 'claude' ? project.writable === true : project.writable !== false);
   const workspaces = [...new Set(writableProjects.flatMap(project => project.roots))];
   const preferredWorkspace = writableProjects.find(project => project.id === thread?.projectId)?.roots[0] || writableProjects.find(project => expandedProjects.has(project.id))?.roots[0] || workspaces[0];
 
@@ -506,9 +506,9 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
       })}</div></section>
       <div className="sidebar-title"><div><span className="eyebrow">工作空间</span><h1>项目</h1></div><div className="sidebar-title-actions"><button className={`search-toggle icon-button ${searchOpen ? 'chosen' : ''}`} aria-label={searchOpen ? '关闭项目搜索' : '搜索项目'} aria-expanded={searchOpen} onClick={() => { setSearchOpen(!searchOpen); if (searchOpen) setSearch(''); }}><Search size={20} /></button><button className="new-button" aria-label="新建对话" title="新建对话" disabled={!canCreate || !workspaces.length} onClick={showNewChat}><Plus size={21} /></button></div></div>
       {searchOpen && <label className="search-box provider-search"><Search size={17} /><input autoFocus aria-label="搜索项目" value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') { setSearchOpen(false); setSearch(''); } }} placeholder={`搜索 ${providerName} 项目…`} /><button className="icon-button" aria-label="清除并关闭搜索" onClick={() => { setSearch(''); setSearchOpen(false); }}><X size={16} /></button></label>}
-      <div className="project-list-toolbar"><span>{projects.length ? `${projects.length} 个项目` : 'Mac 上的项目'}</span><button className="icon-button" aria-label="刷新项目列表" onClick={refreshProjectTree} disabled={listLoading || !device.connectorOnline}><RefreshCw size={15} className={listLoading ? 'spin' : ''} /></button></div>
+      <div className="project-list-toolbar"><span>{projects.length ? `${projects.length} 个项目` : '电脑上的项目'}</span><button className="icon-button" aria-label="刷新项目列表" onClick={refreshProjectTree} disabled={listLoading || !device.connectorOnline}><RefreshCw size={15} className={listLoading ? 'spin' : ''} /></button></div>
       <div className="thread-list project-tree" aria-label="项目与对话">
-        {listLoading && !projects.length ? <div className="list-empty"><LoaderCircle className="spin" />正在读取 Mac 项目…</div> : filteredProjects.length ? filteredProjects.map(project => {
+        {listLoading && !projects.length ? <div className="list-empty"><LoaderCircle className="spin" />正在读取电脑上的项目…</div> : filteredProjects.length ? filteredProjects.map(project => {
           const open = expandedProjects.has(project.id), ids = projectThreads[project.id];
           return <section className={`project-branch ${open ? 'expanded' : ''}`} key={project.id}>
             <button className="project-row" aria-label={`${open ? '折叠' : '展开'}项目 ${project.name}`} aria-expanded={open} aria-controls={`project-${project.id}`} onClick={() => toggleProject(project.id)}><ChevronRight className="project-chevron" size={14} /><Folder size={19} /><span>{project.name}</span></button>
@@ -531,12 +531,12 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
     <main className={`workspace ${!selected ? 'empty-workspace' : ''}`} inert={mobile && drawerOpen ? true : undefined} aria-hidden={mobile && drawerOpen ? true : undefined}>
       {!selected ? <>
         <header className="welcome-top"><button className="icon-button drawer-trigger" data-drawer-trigger aria-label="打开项目与对话" aria-controls="conversation-sidebar" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu size={23} /></button><span><i className={`dot ${device.connectorOnline ? 'green' : 'muted'}`} />{device.connectorOnline ? '与 Mac 保持连接' : '等待 Mac 上线'}</span>{window.AIRemoteAndroid ? <button className="icon-button" aria-label="Android 应用设置与更新" onClick={() => window.AIRemoteAndroid?.openSettings()}><MoreHorizontal size={19} /></button> : <span>你的 AI，随时继续</span>}</header>
-        <div className="welcome"><div className="welcome-art"><div className="art-orbit one" /><div className="art-orbit two" /><div className="art-core"><Terminal size={42} /></div><span className="art-spark"><Sparkles size={21} /></span><span className="art-status"><i className={`dot ${device.connectorOnline ? 'green' : 'muted'}`} />{device.connectorOnline ? '已就绪' : '等待连接'}</span></div><div className="eyebrow">从这里，继续创造</div><h1>离开桌面，<br />思路继续。</h1><p>{hostDevice.deviceCount === 0 ? '配对你的 Mac 后会显示各 AI 客户端的项目。' : '从左上角选择一个对话，继续你的工作。'}</p>{hostDevice.deviceCount === 0 ? <a href="/account" className="primary">配对 Mac</a> : <button className="primary" disabled={!canCreate || !workspaces.length} onClick={showNewChat}><Plus size={18} />新建对话</button>}
+        <div className="welcome"><div className="welcome-art"><div className="art-orbit one" /><div className="art-orbit two" /><div className="art-core"><Terminal size={42} /></div><span className="art-spark"><Sparkles size={21} /></span><span className="art-status"><i className={`dot ${device.connectorOnline ? 'green' : 'muted'}`} />{device.connectorOnline ? '已就绪' : '等待连接'}</span></div><div className="eyebrow">从这里，继续创造</div><h1>离开桌面，<br />思路继续。</h1><p>{hostDevice.deviceCount === 0 ? '配对电脑后会显示各 AI 客户端的项目。' : '从左上角选择一个对话，继续你的工作。'}</p>{hostDevice.deviceCount === 0 ? <a href="/account" className="primary">配对电脑</a> : <button className="primary" disabled={!canCreate || !workspaces.length} onClick={showNewChat}><Plus size={18} />新建对话</button>}
           <div className="feature-strip"><span><Activity size={16} />实时状态</span><span><FileText size={16} />回复与文件</span><span><ListOrdered size={16} />原生队列</span></div></div>
       </> : <>
         <header className="conversation-header">
           <button className="icon-button mobile-back drawer-trigger" data-drawer-trigger aria-label="打开项目与对话" aria-controls="conversation-sidebar" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu size={23} /></button>
-          <div className="conversation-title"><div className="conversation-breadcrumb"><ProviderMark id={providerId} className="inline-provider-icon" />{providerName}<span>/</span>{thread?.cwd?.split('/').pop() || 'Mac'}</div><h1>{thread?.title || '正在读取对话…'}</h1></div>
+          <div className="conversation-title"><div className="conversation-breadcrumb"><ProviderMark id={providerId} className="inline-provider-icon" />{providerName}<span>/</span>{thread?.cwd?.split(/[\\/]/).pop() || 'Mac'}</div><h1>{thread?.title || '正在读取对话…'}</h1></div>
           <button className="header-file-button" aria-label="查看对话文件" title="对话文件" onClick={() => setFilesOpen(true)}><Folder size={18} /><span className="header-file-label">文件</span>{!!files.length && <span className="header-file-count">{files.length}</span>}</button>
           {providerId === 'codex' && <button className="icon-button" aria-label="管理对话目标" title="对话目标" onClick={() => { setError(''); setGoalOpen(true); }}><Target size={19} /></button>}
           <button className="icon-button refresh-detail" aria-label="刷新当前对话" disabled={loading || !device.connectorOnline} onClick={() => loadDetail()}><RefreshCw size={18} className={loading ? 'spin' : ''} /></button>
@@ -586,10 +586,10 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
         <div className="composer-wrap">
           {receipt && <ReceiptView receipt={receipt} close={() => setReceipt(null)} />}
           {providerId === 'codex' && <ModelStatus thread={thread} online={device.connectorOnline && !syncErrors.thread} />}
-          {providerId === 'claude' && !receipt && thread?.writeMessage && <p className="claude-write-note">{thread.writeMessage}</p>}
+          {!receipt && thread?.writeMessage && <p className="claude-write-note">{thread.writeMessage}</p>}
           <div className="composer-stack">
           <QueueDock reorder={!!provider?.features.includes('queue-reorder')} items={queue} active={stat.tone === 'green'} enabled={!!canWrite} onSend={item => queueAction(item, 'send')} onDelete={item => queueAction(item, 'delete')} onEdit={item => { setEditing(item); setEditText(queueText(item)); }} onMove={(item, direction) => queueAction(item, direction)} onClear={() => setClearing(true)} />
-        {providerId === 'codex' && <GoalControl key={selected} state={thread?.goalState} open={goalOpen} close={() => setGoalOpen(false)} show={() => { setError(''); setGoalOpen(true); }} online={device.connectorOnline && !syncErrors.thread && !loading} busy={!!busy} error={error} change={changeGoal} Modal={Modal} />}
+        {providerId === 'codex' && thread?.writeAvailable !== false && <GoalControl key={selected} state={thread?.goalState} open={goalOpen} close={() => setGoalOpen(false)} show={() => { setError(''); setGoalOpen(true); }} online={device.connectorOnline && !syncErrors.thread && !loading} busy={!!busy} error={error} change={changeGoal} Modal={Modal} />}
           <Composer mobile={mobile} value={draft} onChange={value => setDrafts(d => ({ ...d, [selected]: value }))} onSend={send} mode={sendMode} setMode={setSendMode} providerId={providerId} providerName={providerName} busy={!!busy} enabled={!!canWrite} canCreate={canCreate && workspaces.length > 0} supportsQueue={supportsQueue} onFiles={() => setFilesOpen(true)} onNewChat={showNewChat} />
           </div>
           <div className="composer-caption">{busy || (sendMode === 'queue' ? `原生队列由 ${providerName} 自动执行，空闲时可能立即开始` : stat.tone === 'green' ? '运行中发送会追加到当前对话 · ⌘ / Ctrl + Enter 发送' : '在同一对话继续下一轮 · ⌘ / Ctrl + Enter 发送')}</div>

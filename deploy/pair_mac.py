@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Redeem a one-time pairing code and save private credentials on the Mac."""
 
-import fcntl
 import hashlib
 import json
 import os
@@ -16,6 +15,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
 
 from configure_mac import configure, relay_origin
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'relay'))
+from local_lock import exclusive_lock
 
 
 class DirectOnly(HTTPRedirectHandler):
@@ -58,13 +60,11 @@ def pair(data, connections=None, request=claim):
     root = Path(connections or Path.home() / 'Library/Application Support/AIRemote/Connections')
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     home = root / ('pair-' + hashlib.sha256((origin + '\n' + code).encode()).hexdigest()[:24])
-    lock_fd = os.open(root / 'pairing.lock', os.O_WRONLY | os.O_CREAT, 0o600)
-    with os.fdopen(lock_fd, 'w') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with exclusive_lock(root / 'pairing.lock'):
         config = home / '.local/mac-runtime.json'
         if config.is_file():
             agent = home / '.local/relay-agent.json'
-            if config.stat().st_mode & 0o077 or agent.stat().st_mode & 0o077:
+            if os.name != 'nt' and (config.stat().st_mode & 0o077 or agent.stat().st_mode & 0o077):
                 raise PermissionError('配对配置的访问权限无效。')
             saved = json.loads(agent.read_text())
             token = saved['agent_token']
@@ -79,7 +79,7 @@ def pair(data, connections=None, request=claim):
                 # The server has not been contacted yet; only our new staging directory is removed.
                 shutil.rmtree(home)
                 raise
-        result = request(origin, {'code': code, 'name': name.strip(), 'tokenHash': hashlib.sha256(token.encode()).hexdigest()})
+        result = request(origin, {'code': code, 'name': name.strip(), 'platform': 'windows' if os.name == 'nt' else 'macos', 'tokenHash': hashlib.sha256(token.encode()).hexdigest()})
         device_id = str(uuid.UUID(result['deviceId']))
     return {'paired': True, 'directory': str(home.resolve()), 'deviceId': device_id}
 

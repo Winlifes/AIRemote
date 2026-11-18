@@ -61,7 +61,8 @@ class Accounts:
                     created REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS devices(
                     id TEXT PRIMARY KEY, account TEXT NOT NULL, name TEXT NOT NULL,
-                    token_hash TEXT NOT NULL UNIQUE, created REAL NOT NULL, revoked REAL);
+                    token_hash TEXT NOT NULL UNIQUE, created REAL NOT NULL, revoked REAL,
+                    platform TEXT NOT NULL DEFAULT 'macos');
                 CREATE INDEX IF NOT EXISTS devices_account ON devices(account);
                 CREATE TABLE IF NOT EXISTS sessions(
                     token_hash TEXT PRIMARY KEY, account TEXT NOT NULL, csrf TEXT NOT NULL, expires REAL NOT NULL);
@@ -75,7 +76,9 @@ class Accounts:
             db.execute('''INSERT INTO accounts VALUES(?,?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET
                        username=excluded.username,salt=excluded.salt,password=excluded.password''',
                        (OWNER, config['username'], config['password_salt'], config['password_hash'], time.time()))
-            db.execute('''INSERT INTO devices VALUES(?,?,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET
+            if 'platform' not in {row['name'] for row in db.execute('PRAGMA table_info(devices)')}:
+                db.execute("ALTER TABLE devices ADD COLUMN platform TEXT NOT NULL DEFAULT 'macos'")
+            db.execute('''INSERT INTO devices(id,account,name,token_hash,created,revoked) VALUES(?,?,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET
                        token_hash=excluded.token_hash''', (LEGACY_DEVICE, OWNER, config.get('device_name', '我的 Mac'),
                                                           digest(config.get('agent_token', '')), time.time()))
         self.path.chmod(0o600)
@@ -176,9 +179,11 @@ class Accounts:
             db.execute('INSERT INTO pairings VALUES(?,?,?,NULL)', (digest(code), account, expires))
         return {'code': code, 'expiresAt': expires}
 
-    def claim_pairing(self, code, token_hash, name):
+    def claim_pairing(self, code, token_hash, name, platform='macos'):
         code_hash = digest(token_value(code))
         name = device_name(name)
+        if platform not in ('macos', 'windows'):
+            raise ValueError('此设备平台暂不支持。')
         if not isinstance(token_hash, str) or not re.fullmatch(r'[0-9a-f]{64}', token_hash):
             raise ValueError('设备凭据格式无效。')
         with self.lock, self.db() as db:
@@ -196,12 +201,12 @@ class Accounts:
             if db.execute('SELECT 1 FROM devices WHERE token_hash=?', (token_hash,)).fetchone():
                 raise Conflict('请使用新的设备凭据。')
             device = str(uuid.uuid4())
-            db.execute('INSERT INTO devices VALUES(?,?,?,?,?,NULL)', (device, row['account'], name, token_hash, time.time()))
+            db.execute('INSERT INTO devices VALUES(?,?,?,?,?,NULL,?)', (device, row['account'], name, token_hash, time.time(), platform))
             db.execute('UPDATE pairings SET device=? WHERE code_hash=?', (device, code_hash))
             return device
 
     def devices(self, account=None, include_revoked=False):
-        query = 'SELECT id,account,name,created,revoked FROM devices WHERE 1=1'
+        query = 'SELECT id,account,name,created,revoked,platform FROM devices WHERE 1=1'
         args = ()
         if account is not None:
             query += ' AND account=?'
@@ -213,13 +218,13 @@ class Accounts:
 
     def agent(self, authorization):
         if not authorization.startswith('Bearer ') or not 31 <= len(authorization) <= 128:
-            raise PermissionError('设备连接凭据已失效，请重新配对此 Mac。')
+            raise PermissionError('设备连接凭据已失效，请重新配对电脑。')
         with self.db() as db:
             device = db.execute('''SELECT devices.id,devices.account,devices.name FROM devices JOIN accounts
                                 ON devices.account=accounts.id WHERE token_hash=? AND revoked IS NULL AND enabled=1''',
                                 (digest(authorization[7:]),)).fetchone()
         if not device:
-            raise PermissionError('设备连接凭据已失效，请重新配对此 Mac。')
+            raise PermissionError('设备连接凭据已失效，请重新配对电脑。')
         return dict(device)
 
     def revoke_device(self, device, account=None):

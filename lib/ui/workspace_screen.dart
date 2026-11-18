@@ -149,6 +149,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
                       ),
                     if (selected &&
                         state.provider == 'codex' &&
+                        state.chat?['writeAvailable'] != false &&
                         state.goal == null)
                       IconButton(
                         tooltip: '对话目标',
