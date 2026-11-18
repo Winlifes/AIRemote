@@ -1,6 +1,7 @@
 """Run the Windows connector and outbound agent against isolated native records."""
 
 import json
+from contextlib import closing
 import os
 from pathlib import Path
 import secrets
@@ -99,7 +100,7 @@ class WindowsConnectorTests(unittest.TestCase):
                     if call('/api/device')['connectorOnline']:
                         break
                     time.sleep(.05)
-                with relay.device_store(result['deviceId']).db() as db:
+                with closing(relay.device_store(result['deviceId']).db()) as db:
                     self.assertIsNotNone(db.execute('SELECT 1 FROM device WHERE connector_online=1').fetchone())
                 providers = request('/api/providers')['providers']
                 self.assertEqual(providers[0]['clientName'], 'Codex Windows')

@@ -1,6 +1,7 @@
 """Read authorized Windows Codex history using SQLite or native rollout files."""
 
 import base64
+from contextlib import closing
 import hashlib
 import hmac
 import json
@@ -68,7 +69,7 @@ class CodexWindows:
             return self.rows
         rows = {}
         try:
-            with connect_read_only(find_database(self.home, 'state')) as db:
+            with closing(connect_read_only(find_database(self.home, 'state'))) as db:
                 columns = {row['name'] for row in db.execute('PRAGMA table_info(threads)')}
                 fields = ','.join(name for name in ('id', 'cwd', 'name', 'title', 'history_mode', 'rollout_path', 'updated_at', 'archived') if name in columns)
                 if {'id', 'cwd'} <= columns:
