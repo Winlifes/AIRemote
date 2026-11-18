@@ -1,7 +1,6 @@
 """Run the Windows connector and outbound agent against isolated native records."""
 
 import json
-from contextlib import closing
 import os
 from pathlib import Path
 import secrets
@@ -64,6 +63,7 @@ class WindowsConnectorTests(unittest.TestCase):
             (sessions / f'rollout-fixture-{THREAD}.jsonl').write_text(''.join(json.dumps(record) + '\n' for record in records), encoding='utf-8')
             config, _ = initialize_config(root / 'server.json', 'http://127.0.0.1')
             relay = RelayServer(('127.0.0.1', 0), config, root / 'relay', root)
+            relay.daemon_threads = False
             site = f'http://127.0.0.1:{relay.server_port}'
             config['public_origin'] = site
             owner = {'Authorization': 'Bearer ' + config['owner_token']}
@@ -100,7 +100,7 @@ class WindowsConnectorTests(unittest.TestCase):
                     if call('/api/device')['connectorOnline']:
                         break
                     time.sleep(.05)
-                with closing(relay.device_store(result['deviceId']).db()) as db:
+                with relay.device_store(result['deviceId']).db() as db:
                     self.assertIsNotNone(db.execute('SELECT 1 FROM device WHERE connector_online=1').fetchone())
                 providers = request('/api/providers')['providers']
                 self.assertEqual(providers[0]['clientName'], 'Codex Windows')

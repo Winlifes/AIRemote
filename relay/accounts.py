@@ -1,5 +1,6 @@
-"""Account authentication, invitations, and account-owned Mac registrations."""
+"""Account authentication, invitations, and account-owned device registrations."""
 
+from contextlib import closing, contextmanager
 import hashlib
 import hmac
 import os
@@ -83,10 +84,11 @@ class Accounts:
                                                           digest(config.get('agent_token', '')), time.time()))
         self.path.chmod(0o600)
 
+    @contextmanager
     def db(self):
-        connection = sqlite3.connect(self.path, timeout=15)
-        connection.row_factory = sqlite3.Row
-        return connection
+        with closing(sqlite3.connect(self.path, timeout=15)) as db, db:
+            db.row_factory = sqlite3.Row
+            yield db
 
     def authenticate(self, username, password):
         if (not isinstance(username, str) or not isinstance(password, str) or

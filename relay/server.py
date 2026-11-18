@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Self-hosted AIRemote relay. Python stdlib; run behind a TLS reverse proxy."""
 import argparse
+from contextlib import closing, contextmanager
 import hashlib
 import hmac
 import json
@@ -64,10 +65,11 @@ class Store:
             db.execute("UPDATE jobs SET state='result_expired' WHERE state='expired' AND finished IS NOT NULL")
         self.path.chmod(0o600)
 
+    @contextmanager
     def db(self):
-        db = sqlite3.connect(self.path, timeout=15)
-        db.row_factory = sqlite3.Row
-        return db
+        with closing(sqlite3.connect(self.path, timeout=15)) as db, db:
+            db.row_factory = sqlite3.Row
+            yield db
 
     def device(self):
         with self.db() as db:
@@ -87,7 +89,7 @@ class Store:
                     raise Conflict("同一请求编号不能用于不同操作。")
                 return dict(old)
             if not self.device()["connectorOnline"]:
-                raise Unavailable("Mac 连接器离线，请检查 Mac 是否联网并保持运行。")
+                raise Unavailable("电脑连接器离线，请检查电脑是否联网并保持运行。")
             if db.execute("SELECT count(*) FROM jobs WHERE state IN ('queued','working') AND expires>?", (time.time(),)).fetchone()[0] >= 60:
                 raise Unavailable("请求较多，请稍后重试。")
             job_id, created = str(uuid.uuid4()), time.time()

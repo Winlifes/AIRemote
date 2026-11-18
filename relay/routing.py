@@ -1,5 +1,6 @@
-"""Merge account-owned device catalogs and route each action to its native Mac."""
+"""Merge account-owned device catalogs and route each action to its source device."""
 
+from contextlib import closing, contextmanager
 import json
 from pathlib import Path, PureWindowsPath
 import re
@@ -59,10 +60,11 @@ class Router:
             ''')
         self.path.chmod(0o600)
 
+    @contextmanager
     def db(self):
-        db = sqlite3.connect(self.path, timeout=15)
-        db.row_factory = sqlite3.Row
-        return db
+        with closing(sqlite3.connect(self.path, timeout=15)) as db, db:
+            db.row_factory = sqlite3.Row
+            yield db
 
     def record_alias(self, db, account, provider, kind, device, native, public):
         db.execute('''INSERT INTO aliases VALUES(?,?,?,?,?,?) ON CONFLICT(account,provider,kind,device,native)
