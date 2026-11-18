@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/platform.dart';
 import '../core/updates.dart';
 import '../core/workspace.dart';
+import 'account_screen.dart';
 import 'workspace_screen.dart';
 
 const edgeStyle = SystemUiOverlayStyle(
@@ -261,12 +262,31 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final username = TextEditingController(), password = TextEditingController();
+  final username = TextEditingController(),
+      code = TextEditingController(),
+      password = TextEditingController();
+  bool registering = false;
+
   @override
   void dispose() {
     username.dispose();
+    code.dispose();
     password.dispose();
     super.dispose();
+  }
+
+  Future<void> submit() async {
+    final state = widget.state;
+    if (registering) {
+      await state.register(code.text.trim(), password.text);
+    } else {
+      await state.login(username.text.trim(), password.text);
+    }
+    if (mounted && state.authenticated) {
+      password.clear();
+      code.clear();
+      TextInput.finishAutofillContext();
+    }
   }
 
   @override
@@ -283,9 +303,12 @@ class _LoginScreenState extends State<LoginScreen> {
                 children: [
                   const Brand(size: 42),
                   const SizedBox(height: 30),
-                  const Text(
-                    '连接你的工作空间',
-                    style: TextStyle(fontSize: 25, fontWeight: FontWeight.w600),
+                  Text(
+                    registering ? '使用邀请码注册' : '连接你的工作空间',
+                    style: const TextStyle(
+                      fontSize: 25,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                   const SizedBox(height: 9),
                   Text(
@@ -293,17 +316,32 @@ class _LoginScreenState extends State<LoginScreen> {
                     style: const TextStyle(fontSize: 12, color: muted),
                   ),
                   const SizedBox(height: 24),
-                  TextField(
-                    controller: username,
-                    autofillHints: const [AutofillHints.username],
-                    decoration: const InputDecoration(labelText: '账号'),
-                  ),
+                  if (registering)
+                    TextField(
+                      controller: code,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      decoration: const InputDecoration(labelText: '邀请码'),
+                    )
+                  else
+                    TextField(
+                      controller: username,
+                      autofillHints: const [AutofillHints.username],
+                      decoration: const InputDecoration(labelText: '账号'),
+                    ),
                   const SizedBox(height: 16),
                   TextField(
                     controller: password,
                     obscureText: true,
-                    autofillHints: const [AutofillHints.password],
-                    decoration: const InputDecoration(labelText: '访问密码'),
+                    autofillHints: [
+                      registering
+                          ? AutofillHints.newPassword
+                          : AutofillHints.password,
+                    ],
+                    decoration: InputDecoration(
+                      labelText: registering ? '设置密码' : '访问密码',
+                      helperText: registering ? '至少 12 个字符' : null,
+                    ),
                   ),
                   if (widget.state.error.isNotEmpty)
                     Padding(
@@ -317,30 +355,22 @@ class _LoginScreenState extends State<LoginScreen> {
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton(
-                      onPressed: widget.state.busy
-                          ? null
-                          : () async {
-                              await widget.state.login(
-                                username.text.trim(),
-                                password.text,
-                              );
-                              if (widget.state.authenticated) {
-                                password.clear();
-                                TextInput.finishAutofillContext();
-                              }
-                            },
-                      child: const Padding(
-                        padding: EdgeInsets.all(13),
-                        child: Text('登录'),
+                      onPressed: widget.state.busy ? null : submit,
+                      child: Padding(
+                        padding: const EdgeInsets.all(13),
+                        child: Text(registering ? '注册并登录' : '登录'),
                       ),
                     ),
                   ),
                   TextButton(
-                    onPressed: () => launchUrl(
-                      Uri.parse('${widget.state.api.server}/register'),
-                      mode: LaunchMode.externalApplication,
-                    ),
-                    child: const Text('使用邀请码'),
+                    onPressed: widget.state.busy
+                        ? null
+                        : () => setState(() {
+                            registering = !registering;
+                            widget.state.error = '';
+                            password.clear();
+                          }),
+                    child: Text(registering ? '返回登录' : '使用邀请码'),
                   ),
                   TextButton(
                     onPressed: widget.changeServer,
@@ -356,13 +386,13 @@ class _LoginScreenState extends State<LoginScreen> {
   );
 }
 
-void showSettings(
+Future<void> showSettings(
   BuildContext context,
   AppUpdater? updater,
   Workspace state,
   VoidCallback changeServer,
-) {
-  showModalBottomSheet<void>(
+) async {
+  final openAccount = await showModalBottomSheet<bool>(
     context: context,
     useSafeArea: true,
     isScrollControlled: true,
@@ -410,10 +440,7 @@ void showSettings(
                       contentPadding: EdgeInsets.zero,
                       leading: const Icon(Icons.devices_outlined),
                       title: const Text('账号与设备'),
-                      onTap: () => launchUrl(
-                        Uri.parse('${state.api.server}/account'),
-                        mode: LaunchMode.externalApplication,
-                      ),
+                      onTap: () => Navigator.pop(context, true),
                     ),
                     SwitchListTile(
                       contentPadding: EdgeInsets.zero,
@@ -510,4 +537,9 @@ void showSettings(
       ),
     ),
   );
+  if (openAccount == true && context.mounted && state.authenticated) {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => AccountScreen(state: state)),
+    );
+  }
 }

@@ -66,6 +66,39 @@ class RelayClient implements HttpClient {
 
 void main() {
   test(
+    'native registration establishes the session used by account actions',
+    () async {
+      final client = RelayClient([
+        RelayResponse(
+          {'username': 'lin', 'csrf': 'initial'},
+          cookies: [Cookie('__Host-airemote_session', 'invited-session')],
+        ),
+        RelayResponse({'username': 'lin', 'csrf': 'current', 'device': {}}),
+        RelayResponse({'code': 'pair-code'}),
+      ]);
+      final api = RelayApi(
+        'https://example.com',
+        MemoryVault(),
+        httpClient: client,
+      );
+      final member = await api.register('invite-code', 'new-test-password');
+      expect(member['username'], 'lin');
+      expect(client.requests.first.url.path, '/api/register');
+      expect(jsonDecode(utf8.decode(client.requests.first.body)), {
+        'code': 'invite-code',
+        'password': 'new-test-password',
+      });
+      await api.api('/api/account/pairings', method: 'POST');
+      expect(client.requests.last.headers.value('X-AIRemote-CSRF'), 'current');
+      expect(
+        client.requests.last.headers.value(HttpHeaders.cookieHeader),
+        '__Host-airemote_session=invited-session',
+      );
+      api.close();
+    },
+  );
+
+  test(
     'UTF-8 login body uses Content-Length, persists cookie and sends CSRF',
     () async {
       final vault = MemoryVault();

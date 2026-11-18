@@ -51,6 +51,7 @@ abstract interface class RemoteApi {
   String get server;
   Future<Json> session();
   Future<Json> login(String username, String password);
+  Future<Json> register(String code, String password);
   Future<void> logout();
   Future<Json> api(String path, {String method = 'GET', Json body = const {}});
   Future<Json> bridge(
@@ -188,12 +189,15 @@ class RelayApi implements RemoteApi {
   }
 
   @override
-  Future<Json> login(String username, String password) async {
-    final value = await api(
-      '/api/login',
-      method: 'POST',
-      body: {'username': username, 'password': password},
-    );
+  Future<Json> login(String username, String password) =>
+      _authenticate('/api/login', {'username': username, 'password': password});
+
+  @override
+  Future<Json> register(String code, String password) =>
+      _authenticate('/api/register', {'code': code, 'password': password});
+
+  Future<Json> _authenticate(String path, Json body) async {
+    final value = await api(path, method: 'POST', body: body);
     _sessionGeneration++;
     _csrf = value['csrf'] as String? ?? '';
     return session();

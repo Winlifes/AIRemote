@@ -233,12 +233,18 @@ class Workspace extends ChangeNotifier {
     });
   }
 
-  Future<void> login(String username, String password) async {
+  Future<void> login(String username, String password) =>
+      _signIn(() => api.login(username, password));
+
+  Future<void> register(String code, String password) =>
+      _signIn(() => api.register(code, password));
+
+  Future<void> _signIn(Future<Json> Function() authenticate) async {
     busy = true;
     error = '';
     changed();
     try {
-      final value = await api.login(username, password);
+      final value = await authenticate();
       _clearAccount();
       device = Map<String, dynamic>.from(value['device'] ?? {});
       authenticated = true;
@@ -249,6 +255,20 @@ class Workspace extends ChangeNotifier {
     } finally {
       busy = false;
       changed();
+    }
+  }
+
+  Future<Json> accountRequest(
+    String path, {
+    String method = 'GET',
+    Json body = const {},
+  }) async {
+    if (!authenticated || disposed) throw const ApiError('请先登录。', 401);
+    try {
+      return await api.api(path, method: method, body: body);
+    } on ApiError catch (failure) {
+      if (failure.status == 401 && !disposed) _error(failure);
+      rethrow;
     }
   }
 

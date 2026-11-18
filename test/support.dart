@@ -26,7 +26,9 @@ class Call {
 
 class FakeApi implements RemoteApi {
   final calls = <Call>[];
+  final apiCalls = <Call>[];
   FutureOr<Json> Function(Call)? respond;
+  FutureOr<Json> Function(Call)? respondApi;
   @override
   String get server => 'https://example.com';
   @override
@@ -38,13 +40,29 @@ class FakeApi implements RemoteApi {
   @override
   Future<Json> login(String username, String password) => session();
   @override
+  Future<Json> register(String code, String password) {
+    apiCalls.add(
+      Call('/api/register', 'POST', {'code': code, 'password': password}, null),
+    );
+    return session();
+  }
+
+  @override
   Future<void> logout() async {}
   @override
   Future<Json> api(
     String path, {
     String method = 'GET',
     Json body = const {},
-  }) async => {'online': true, 'connectorOnline': true};
+  }) async {
+    final call = Call(path, method, body, null);
+    apiCalls.add(call);
+    final respond = respondApi;
+    return respond == null
+        ? {'online': true, 'connectorOnline': true}
+        : await respond(call);
+  }
+
   @override
   Future<Json> bridge(
     String path, {

@@ -142,7 +142,8 @@ jobs:
           cat > release-notes.md <<'NOTES'
           手机查看和继续 Mac 上的 Codex、DeepSeek Harness 和 Claude Code 对话。
 
-          - 同一站点可邀请多个账号，各账号可配对多台电脑。管理员页面支持管理邀请、账号状态和设备绑定。项目和对话按 AI 客户端汇总，实际操作路由到原设备。
+          - 手机 App 内可查看账号和设备状态、生成配对码、解绑电脑和使用邀请码注册。管理员可在 App 内生成或撤销邀请、启用或停用账号、管理绑定设备。
+          - 同一站点可邀请多个账号，各账号可配对多台电脑。项目和对话按 AI 客户端汇总，实际操作路由到原设备。
           - Windows：解压 AIRemote-windows.zip，安装 Python 3.11+（含 Launcher 和 Tcl/Tk），双击 AIRemote.cmd。当前支持配对、读取授权项目中的 Codex 会话和下载关联文件。
           - Mac 启动时自动使用保存的配置目录。配置缺失或权限受限时，窗口显示实际尝试读取的位置，并提供“配置文件夹…”入口。
           - Mac 启动后检查更新，发现新版时弹窗提示。网页、Flutter 和 Mac 管理窗口内置 Claude Desktop 的应用图标。
