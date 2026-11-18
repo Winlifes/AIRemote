@@ -75,7 +75,6 @@ const routeProvider = () => providerIds.find(id => location.hash === `#${id}` ||
 const selectedChat = () => location.hash.slice(1).replace(/^(codex|deepseek|claude)(?:\/|$)/, '');
 
 function ProviderMark({ id, className = '' }: { id: ProviderId; className?: string }) {
-  if (id === 'claude') return <span aria-hidden="true" className={`claude-mark ${className}`}><Code2 /></span>;
   return <img className={className} src={`/providers/${id}.png`} alt="" />;
 }
 function App({ providerId, switchProvider, drafts, setDrafts, drawerOpen, setDrawerOpen }: { providerId: ProviderId; switchProvider: (id: ProviderId) => void; drafts: Record<string, string>; setDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>; drawerOpen: boolean; setDrawerOpen: React.Dispatch<React.SetStateAction<boolean>> }) {

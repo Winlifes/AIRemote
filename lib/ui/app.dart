@@ -29,25 +29,8 @@ class ProviderIcon extends StatelessWidget {
   const ProviderIcon(this.provider, this.size, {super.key});
 
   @override
-  Widget build(BuildContext context) {
-    if (provider == 'claude') {
-      return DecoratedBox(
-        decoration: BoxDecoration(
-          color: const Color(0xfff7e9df),
-          borderRadius: BorderRadius.circular(size * .25),
-        ),
-        child: SizedBox.square(
-          dimension: size,
-          child: Icon(
-            Icons.code_rounded,
-            size: size * .7,
-            color: const Color(0xff995a3c),
-          ),
-        ),
-      );
-    }
-    return Image.asset('assets/$provider.png', width: size, height: size);
-  }
+  Widget build(BuildContext context) =>
+      Image.asset('assets/$provider.png', width: size, height: size);
 }
 
 class AIRemoteApp extends StatelessWidget {

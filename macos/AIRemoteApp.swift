@@ -45,6 +45,7 @@ struct GoalChannelStatus: Decodable {
     @Published var message = "正在检查服务…"
     @Published var error: String?
     @Published var update: UpdateStatus?
+    @Published var announceUpdate = false
     @Published var updating = false
     @Published var updateMessage = ""
     @Published var updateProgress: UpdateProgress?
@@ -70,7 +71,7 @@ struct GoalChannelStatus: Decodable {
     func launch() {
         guard !launched else { return }
         launched = true
-        checkIfDue()
+        if autoCheck { checkUpdates(manual: false, announce: true) }
         run(action: nil)
     }
 
@@ -174,7 +175,7 @@ struct GoalChannelStatus: Decodable {
         if autoCheck && Date().timeIntervalSince1970 - checked > 6 * 3600 { checkUpdates(manual: false) }
     }
 
-    func checkUpdates(manual: Bool = true) {
+    func checkUpdates(manual: Bool = true, announce: Bool = false) {
         guard !updating else { return }
         updating = true; updateProgress = UpdateProgress(stage: "checking")
         updateMessage = "正在检查 GitHub 新版本…"
@@ -188,6 +189,7 @@ struct GoalChannelStatus: Decodable {
                 update = value
                 UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "LastUpdateCheck")
                 updateMessage = value.available ? "新版本 \(value.latestVersion) 可用" : "已是最新版本 \(version)"
+                if announce && autoCheck && value.available { announceUpdate = true }
             } else {
                 UserDefaults.standard.set(Date().timeIntervalSince1970 - 5 * 3600, forKey: "LastUpdateCheck")
                 updateMessage = "检查更新未完成，请稍后重试"
@@ -287,11 +289,6 @@ struct ControlView: View {
                     HStack(spacing: 9) {
                         if let url = Bundle.main.url(forResource: client.id, withExtension: "png"), let icon = NSImage(contentsOf: url) {
                             Image(nsImage: icon).resizable().scaledToFit().frame(width: 23, height: 23)
-                        } else if client.id == "claude" {
-                            Image(systemName: "chevron.left.forwardslash.chevron.right")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(.orange)
-                                .frame(width: 23, height: 23)
                         }
                         Text(client.name).font(.system(size: 13))
                         Spacer()
@@ -351,6 +348,15 @@ struct ControlView: View {
             }
         }
         .padding(28).frame(width: 420)
+        .alert("发现 AIRemote 新版本", isPresented: Binding(
+            get: { model.announceUpdate && !model.busy && !model.updating },
+            set: { model.announceUpdate = $0 }
+        ), presenting: model.update) { _ in
+            Button("更新并重启") { model.installUpdate() }
+            Button("稍后", role: .cancel) {}
+        } message: { update in
+            Text("当前版本 \(model.version)，可更新到 \(update.latestVersion)。")
+        }
         .onAppear { model.launch() }
         .onReceive(timer) { _ in model.refresh() }
     }

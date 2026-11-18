@@ -65,7 +65,7 @@ def main():
             name = f'icon_{size}x{size}' + ('@2x' if density == 2 else '') + '.png'
             run('/usr/bin/sips', '-z', str(size*density), str(size*density), str(png), '--out', str(iconset / name))
     run('/usr/bin/iconutil', '-c', 'icns', str(iconset), '-o', str(resources / 'AIRemote.icns'))
-    for provider in ['codex', 'deepseek']:
+    for provider in ['codex', 'deepseek', 'claude']:
         shutil.copy2(PROJECT / f'web/public/providers/{provider}.png', resources / f'{provider}.png')
     bundle_runtime(resources / 'runtime')
     version = (PROJECT / 'VERSION').read_text().strip()

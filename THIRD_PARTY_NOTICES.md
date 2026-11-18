@@ -11,7 +11,7 @@ own licenses, available in their distributions.
 - AndroidX: Apache License 2.0.
 - Gradle wrapper: Apache License 2.0; its license is included under
   `android/gradle/wrapper/LICENSE-Gradle.txt`.
-- OpenAI / Codex and DeepSeek names and provider icons identify third-party
+- OpenAI / Codex, DeepSeek, and Anthropic / Claude names and provider icons identify third-party
   applications. Their trademarks and brand assets belong to their owners and
   are not relicensed under this project's MIT license. AIRemote is independent
   and is not endorsed by those providers.
