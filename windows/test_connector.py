@@ -61,6 +61,10 @@ class WindowsConnectorTests(unittest.TestCase):
                 {'type': 'event_msg', 'payload': {'type': 'task_complete', 'turn_id': 'turn'}},
             ]
             (sessions / f'rollout-fixture-{THREAD}.jsonl').write_text(''.join(json.dumps(record) + '\n' for record in records), encoding='utf-8')
+            child = '20000000-0000-4000-8000-000000000003'
+            child_meta = {'type': 'session_meta', 'payload': {'id': child, 'cwd': str(work),
+                'source': {'subagent': {'thread_spawn': {'parent_thread_id': THREAD}}}}}
+            (sessions / f'rollout-fixture-{child}.jsonl').write_text(json.dumps(child_meta) + '\n', encoding='utf-8')
             config, _ = initialize_config(root / 'server.json', 'http://127.0.0.1')
             relay = RelayServer(('127.0.0.1', 0), config, root / 'relay', root)
             relay.daemon_threads = False

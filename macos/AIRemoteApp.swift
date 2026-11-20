@@ -31,17 +31,13 @@ private struct InstallLaunchStatus: Decodable {
 }
 
 struct GoalChannelStatus: Decodable {
-    var configured = false
-    var connected = false
-    var message: String?
-    init() {}
-    enum CodingKeys: String, CodingKey { case configured, connected, message }
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        configured = try values.decodeIfPresent(Bool.self, forKey: .configured) ?? false
-        connected = try values.decodeIfPresent(Bool.self, forKey: .connected) ?? false
-        message = try values.decodeIfPresent(String.self, forKey: .message)
-    }
+    var bundle: String?
+    var resumeExisting = false
+}
+
+private struct CodexLaunchConfiguration: Decodable {
+    let bundle: String
+    let launcher: String
 }
 
 @MainActor final class ServiceModel: ObservableObject {
@@ -91,6 +87,14 @@ struct GoalChannelStatus: Decodable {
     var config: URL { project.appendingPathComponent(".local/mac-runtime.json") }
     var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0" }
     var runtime: URL { Bundle.main.resourceURL!.appendingPathComponent("runtime", isDirectory: true) }
+    var codexRunning: Bool {
+        guard let bundle = goalChannel.bundle else { return false }
+        return !Self.runningCodex(at: URL(fileURLWithPath: bundle)).isEmpty
+    }
+    var codexAppName: String {
+        guard let bundle = goalChannel.bundle else { return "Codex" }
+        return URL(fileURLWithPath: bundle).deletingPathExtension().lastPathComponent
+    }
 
     func launch() {
         guard !launched else { return }
@@ -108,24 +112,24 @@ struct GoalChannelStatus: Decodable {
     func refresh() {
         checkIfDue()
         tryScheduledUpdate()
-        guard !busy && !checking && !configurationBlocked else { return }
+        guard !busy && !checking else { return }
         checking = true
         let directory = project
         Task {
             defer { checking = false }
-            let result = await Self.execute(directory: directory, runtime: runtime, action: "--status")
-            guard directory == project && !busy else { return }
-            if showConfigurationFailure(result, directory: directory) { return }
-            if result.0 == 0, let data = result.1.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
-               let value = try? JSONDecoder().decode(RuntimeStatus.self, from: data) {
-                status = value
-                if error == nil { message = value.ready ? "服务已运行" : "服务未启动" }
-            } else if error == nil {
-                message = "暂未取得服务状态"
+            if !configurationBlocked {
+                let result = await Self.execute(directory: directory, runtime: runtime, action: "--status")
+                guard directory == project && !busy else { return }
+                if !showConfigurationFailure(result, directory: directory) {
+                    if result.0 == 0, let value = try? JSONDecoder().decode(RuntimeStatus.self, from: Data(result.1.utf8)) {
+                        status = value
+                        if error == nil { message = value.ready ? "服务已运行" : "服务未启动" }
+                    } else if error == nil {
+                        message = "暂未取得服务状态"
+                    }
+                }
             }
-            let goalResult = await Self.goalCommand(runtime: runtime, action: "--status")
-            if goalResult.0 == 0, let data = goalResult.1.data(using: .utf8),
-               let value = try? JSONDecoder().decode(GoalChannelStatus.self, from: data) { goalChannel = value }
+            if let value = await codexChannelStatus(), !busy { goalChannel = value }
         }
     }
 
@@ -223,18 +227,79 @@ struct GoalChannelStatus: Decodable {
         NSWorkspace.shared.open(url)
     }
 
-    func launchGoalChannel() {
+    private static func runningCodex(at bundle: URL) -> [NSRunningApplication] {
+        let target = bundle.resolvingSymlinksInPath().path
+        return NSWorkspace.shared.runningApplications.filter {
+            !$0.isTerminated && $0.bundleURL?.resolvingSymlinksInPath().path == target
+        }
+    }
+
+    private func codexChannelStatus(desktopPID: pid_t? = nil) async -> GoalChannelStatus? {
+        let arguments = ["--status"] + (desktopPID.map { ["--desktop-pid", String($0)] } ?? [])
+        let result = await Self.goalCommand(runtime: runtime, arguments: arguments)
+        guard result.0 == 0 else { return nil }
+        return try? JSONDecoder().decode(GoalChannelStatus.self, from: Data(result.1.utf8))
+    }
+
+    func launchGoalChannel(restart: Bool = false) {
         guard !busy && !installingUpdate else { return }
         busy = true; error = nil
-        goalMessage = "正在准备目标控制通道…"
+        goalMessage = "正在准备 Codex 连接通道…"
         Task {
-            let result = await Self.goalCommand(runtime: runtime, action: "--launch")
-            busy = false
-            if result.0 == 0, let data = result.1.data(using: .utf8),
-               let value = try? JSONDecoder().decode(GoalChannelStatus.self, from: data) {
-                goalMessage = value.message ?? "通道已准备好"
-            } else { goalMessage = "目标通道未启动"; error = String(result.1.suffix(1200)) }
-            refresh()
+            defer { busy = false; refresh() }
+            let result = await Self.goalCommand(runtime: runtime, arguments: ["--prepare"])
+            guard result.0 == 0, let prepared = try? JSONDecoder().decode(CodexLaunchConfiguration.self, from: Data(result.1.utf8)) else {
+                goalMessage = "Codex 连接通道准备失败"
+                error = Self.updateError(result.1)
+                return
+            }
+            let bundle = URL(fileURLWithPath: prepared.bundle, isDirectory: true)
+            let running = Self.runningCodex(at: bundle)
+            guard restart || running.isEmpty else {
+                goalMessage = "Codex 已在运行，可以点击“重启 Codex”接入。"
+                return
+            }
+
+            if !running.isEmpty {
+                goalMessage = "正在等待 Codex 正常退出…"
+                for app in running where !app.isTerminated {
+                    if !app.terminate() && !app.isTerminated {
+                        goalMessage = "macOS 未能请求 Codex 退出，请稍后重试。"
+                        return
+                    }
+                }
+                let clock = ContinuousClock()
+                let deadline = clock.now.advanced(by: .seconds(30))
+                while running.contains(where: { !$0.isTerminated }) && clock.now < deadline {
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
+                guard Self.runningCodex(at: bundle).isEmpty else {
+                    goalMessage = "Codex 仍在运行。请处理桌面上的退出提示后重试。"
+                    return
+                }
+            }
+
+            goalMessage = "正在通过连接通道打开 Codex…"
+            let options = NSWorkspace.OpenConfiguration()
+            options.environment = ["CODEX_CLI_PATH": prepared.launcher]
+            do {
+                let app = try await NSWorkspace.shared.openApplication(at: bundle, configuration: options)
+                let clock = ContinuousClock()
+                let deadline = clock.now.advanced(by: .seconds(15))
+                goalMessage = "正在确认 Codex 连接…"
+                while !app.isTerminated && clock.now < deadline {
+                    if let value = await codexChannelStatus(desktopPID: app.processIdentifier), value.resumeExisting {
+                        goalChannel = value
+                        goalMessage = running.isEmpty ? "Codex 已启动，连接通道已就绪。" : "Codex 已重启，连接通道已就绪。"
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+                goalMessage = app.isTerminated ? "Codex 启动后已退出。" : "Codex 已打开，连接通道尚未就绪。"
+            } catch {
+                goalMessage = "无法打开 Codex"
+                self.error = error.localizedDescription
+            }
         }
     }
 
@@ -351,8 +416,8 @@ struct GoalChannelStatus: Decodable {
         return String(text.suffix(1200))
     }
 
-    nonisolated private static func goalCommand(runtime: URL, action: String) async -> (Int32, String) {
-        await process([runtime.appendingPathComponent("deploy/setup_goal_channel.py").path, action], timeout: 20)
+    nonisolated private static func goalCommand(runtime: URL, arguments: [String]) async -> (Int32, String) {
+        await process([runtime.appendingPathComponent("deploy/setup_goal_channel.py").path] + arguments, timeout: 20)
     }
 
     nonisolated private static func execute(directory: URL, runtime: URL, action: String?) async -> (Int32, String) {
@@ -395,6 +460,7 @@ struct GoalChannelStatus: Decodable {
 struct ControlView: View {
     @ObservedObject var model: ServiceModel
     @State private var pairing = false
+    @State private var confirmCodexRestart = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -443,12 +509,21 @@ struct ControlView: View {
                 Label("配对电脑…", systemImage: "link").frame(maxWidth: .infinity)
             }.buttonStyle(.bordered).disabled(model.busy || model.updating)
             VStack(alignment: .leading, spacing: 7) {
-                Button { model.launchGoalChannel() } label: {
-                    Label(model.goalChannel.connected ? "Codex 连接通道已启用" : "通过连接通道启动 Codex", systemImage: "link")
+                Button {
+                    if model.codexRunning { confirmCodexRestart = true }
+                    else { model.launchGoalChannel() }
+                } label: {
+                    Label(model.codexRunning ? "重启 Codex" : "通过连接通道启动 Codex", systemImage: model.codexRunning ? "arrow.clockwise" : "link")
                         .frame(maxWidth: .infinity)
-                }.buttonStyle(.bordered).disabled(model.busy || model.installingUpdate || model.goalChannel.connected)
-                Text(model.goalMessage.isEmpty ? "首次启用请先正常退出 Codex，再用此按钮打开。" : model.goalMessage)
+                }.buttonStyle(.bordered).disabled(model.busy || model.installingUpdate)
+                Text(model.goalMessage.isEmpty ? (model.goalChannel.resumeExisting ? "Codex 连接通道已就绪。" : "使用此入口打开 Codex，以便从手机继续对话。") : model.goalMessage)
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            .alert("重启 Codex？", isPresented: $confirmCodexRestart) {
+                Button("取消", role: .cancel) {}
+                Button("重启 Codex", role: .destructive) { model.launchGoalChannel(restart: true) }
+            } message: {
+                Text("AIRemote 会正常退出 \(model.codexAppName)，然后通过连接通道重新打开。正在运行的任务可能会中断。")
             }
             Divider()
             HStack {

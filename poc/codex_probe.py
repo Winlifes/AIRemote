@@ -8,6 +8,7 @@ only, has one explicitly selected thread, and never accepts arbitrary paths.
 
 import argparse
 import base64
+from contextlib import closing
 import hashlib
 import hmac
 import json
@@ -20,7 +21,10 @@ import sqlite3
 import subprocess
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import islice
 from urllib.parse import quote, unquote, urlsplit
+
+from codex_rollout import rollout_reader
 
 
 MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
@@ -66,22 +70,17 @@ class History:
         thread = dict(row)
         if thread["history_mode"] != "paginated":
             raise ValueError("This PoC supports paginated history only")
-        db = connect_read_only(self.history_path)
-        try:
-            turns = [dict(r) for r in db.execute(
-                "SELECT turn_id, status, started_at, completed_at, final_agent_item_id "
-                "FROM thread_turns WHERE thread_id=? "
-                "ORDER BY rollout_ordinal DESC LIMIT 20", (self.thread_id,),
-            )]
-        finally:
-            db.close()
+        with closing(connect_read_only(self.history_path)) as db:
+            db.execute('BEGIN')
+            tail = self._rollout_tail(db)
+            turns = self._turns(db, tail, limit=20)
         return {
             "threadId": thread["id"],
             "title": thread["name"] or thread["title"],
             "cwd": thread["cwd"],
             "archived": bool(thread["archived"]),
             "historyMode": thread["history_mode"],
-            "source": "local SQLite, opened read-only",
+            "source": "local history and rollout, opened read-only" if tail else "local SQLite, opened read-only",
             "latestPersistedTurnStatus": turns[0]["status"] if turns else None,
             "runtimeStatus": "unknown",
             "runtimeStatusNote": "Persisted turn status does not prove runtime liveness or approval state.",
@@ -104,33 +103,84 @@ class History:
                 bound = decoded
             except (ValueError, TypeError, KeyError, AttributeError) as error:
                 raise ValueError('Invalid history cursor for this chat') from error
-        db = connect_read_only(self.history_path)
-        try:
-            where = "thread_id=? AND item_type IN ('userMessage','agentMessage')"
-            params = [self.thread_id]
+        with closing(connect_read_only(self.history_path)) as db:
+            db.execute('BEGIN')
+            tail = self._rollout_tail(db)
+            where = "item_type IN ('userMessage','agentMessage')"
+            params = []
             if bound:
                 where += ' AND (rollout_ordinal<? OR (rollout_ordinal=? AND item_id<?))'
                 params.extend([bound['o'], bound['o'], bound['i']])
-            rows = list(db.execute('SELECT turn_id,item_id,created_at_ms,item_json,rollout_ordinal FROM thread_items WHERE ' +
-                                   where + ' ORDER BY rollout_ordinal DESC,item_id DESC LIMIT ?', params + [limit + 1]))
-            has_more = len(rows) > limit
-            rows = rows[:limit]
-            turns = []
-            if include_turns:
-                turn_ids = list({row['turn_id'] for row in rows})
-                for offset in range(0, len(turn_ids), 200):
-                    batch = turn_ids[offset:offset + 200]
-                    turns.extend(dict(row) for row in db.execute('SELECT turn_id,status,started_at,completed_at,final_agent_item_id FROM thread_turns '
-                        'WHERE thread_id=? AND turn_id IN (' + ','.join('?' for _ in batch) + ') ORDER BY rollout_ordinal DESC', [self.thread_id] + batch))
-        finally:
-            db.close()
-        messages = [self._format_item(row) for row in reversed(rows)]
+            recent = list(islice((m for m in reversed(tail.messages) if not bound or
+                                 (m['ordinal'], m['itemId']) < (bound['o'], bound['i'])), limit + 1)) if tail else []
+            recent.extend(self._projected_messages(db, tail, where, params, limit + 1 - len(recent)))
+            has_more = len(recent) > limit
+            messages = list(reversed(recent[:limit]))
+            turns = self._turns(db, tail, {m['turnId'] for m in messages}) if include_turns else []
         cursor = None
-        if has_more and rows:
-            oldest = rows[-1]
-            cursor = base64.urlsafe_b64encode(json.dumps({'v': 1, 't': self.thread_id, 'o': oldest['rollout_ordinal'],
-                'i': oldest['item_id']}, separators=(',', ':')).encode()).decode().rstrip('=')
+        if has_more:
+            oldest = messages[0]
+            cursor = base64.urlsafe_b64encode(json.dumps({'v': 1, 't': self.thread_id, 'o': oldest['ordinal'],
+                'i': oldest['itemId']}, separators=(',', ':')).encode()).decode().rstrip('=')
         return {'messages': messages, 'hasMore': has_more, 'olderCursor': cursor, 'turns': turns, 'pageSize': limit}
+
+    def _rollout_tail(self, db):
+        try:
+            with closing(connect_read_only(self.state_path)) as state:
+                row = state.execute('SELECT rollout_path FROM threads WHERE id=?', (self.thread_id,)).fetchone()
+            if not row or not row['rollout_path']:
+                return None
+            path = Path(row['rollout_path']).resolve(strict=True)
+            if (path.suffix != '.jsonl' or not path.is_file() or not any(
+                    path.is_relative_to((self.home / directory).resolve()) for directory in ('sessions', 'archived_sessions'))):
+                return None
+            checkpoint = None
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_history_projection_state'").fetchone():
+                checkpoint = db.execute('SELECT next_rollout_byte_offset,next_rollout_ordinal FROM thread_history_projection_state '
+                                        'WHERE thread_id=?', (self.thread_id,)).fetchone()
+            return rollout_reader(path, self.thread_id).tail(checkpoint)
+        except sqlite3.OperationalError as e:
+            if 'no such column: rollout_path' not in str(e):
+                raise
+        except (OSError, ValueError, TypeError, RuntimeError):
+            pass
+        return None
+
+    def _prefix(self, tail):
+        if tail is None:
+            return 'thread_id=?', [self.thread_id]
+        return 'thread_id=? AND rollout_ordinal<?', [self.thread_id, tail.cutoff]
+
+    def _projected_messages(self, db, tail, where, params, limit):
+        if not limit:
+            return []
+        prefix, keys = self._prefix(tail)
+        rows = db.execute('SELECT turn_id,item_id,created_at_ms,item_json,rollout_ordinal FROM thread_items WHERE '
+                          + prefix + ' AND ' + where + ' ORDER BY rollout_ordinal DESC,item_id DESC LIMIT ?',
+                          keys + params + [limit])
+        return [self._format_item(row) for row in rows]
+
+    def _turns(self, db, tail, turn_ids=None, limit=None):
+        fields = 'turn_id,status,started_at,completed_at,final_agent_item_id,rollout_ordinal'
+        prefix, keys = self._prefix(tail)
+        sql = 'SELECT ' + fields + ' FROM thread_turns WHERE ' + prefix
+        turns = {}
+        if turn_ids is None:
+            for row in db.execute(sql + ' ORDER BY rollout_ordinal DESC LIMIT ?', keys + [limit]):
+                turns[row['turn_id']] = dict(row)
+        else:
+            ids = list(turn_ids)
+            for offset in range(0, len(ids), 200):
+                batch = ids[offset:offset + 200]
+                for row in db.execute(sql + ' AND turn_id IN (' + ','.join('?' for _ in batch) + ')', keys + batch):
+                    turns[row['turn_id']] = dict(row)
+        if tail:
+            for turn_id, turn in tail.turns.items():
+                if turn_ids is None or turn_id in turn_ids:
+                    existing = turns.get(turn_id, {})
+                    turns[turn_id] = {**existing, **turn, 'rollout_ordinal': existing.get('rollout_ordinal', turn['rollout_ordinal'])}
+        ordered = sorted(turns.values(), key=lambda t: (t['rollout_ordinal'], t['turn_id']), reverse=True)[:limit]
+        return [{key: turn.get(key) for key in fields.split(',') if key != 'rollout_ordinal'} for turn in ordered]
 
     def _format_item(self, row):
         item = json.loads(row['item_json'])
@@ -141,24 +191,26 @@ class History:
             'role': 'assistant' if assistant else 'user', 'phase': item.get('phase'), 'text': text}
 
     def delivery_receipt(self, client_id):
-        db = connect_read_only(self.history_path)
-        try:
-            row = db.execute("SELECT turn_id,item_id,created_at_ms,item_json,rollout_ordinal FROM thread_items "
-                "WHERE thread_id=? AND item_type='userMessage' AND json_extract(item_json,'$.clientId')=? "
-                "ORDER BY rollout_ordinal DESC LIMIT 1", (self.thread_id, client_id)).fetchone()
-            if row is None:
+        with closing(connect_read_only(self.history_path)) as db:
+            db.execute('BEGIN')
+            tail = self._rollout_tail(db)
+            user = next((message for message in reversed(tail.messages)
+                         if message['role'] == 'user' and message['clientId'] == client_id), None) if tail else None
+            if user is None:
+                matches = self._projected_messages(db, tail, "item_type='userMessage' AND json_extract(item_json,'$.clientId')=?",
+                                                   [client_id], 1)
+                user = matches[0] if matches else None
+            if user is None:
                 return {'receivedInHistory': False}
-            user = self._format_item(row)
-            turn = db.execute('SELECT status FROM thread_turns WHERE thread_id=? AND turn_id=?',
-                              (self.thread_id, user['turnId'])).fetchone()
-            later = list(db.execute("SELECT turn_id,item_id,created_at_ms,item_json,rollout_ordinal FROM thread_items "
-                "WHERE thread_id=? AND turn_id=? AND item_type='agentMessage' AND created_at_ms>=? "
-                "ORDER BY rollout_ordinal DESC,item_id DESC LIMIT 8", (self.thread_id, user['turnId'], user['createdAtMs'])))
+            turn_id = user['turnId']
+            turns = self._turns(db, tail, {turn_id})
+            later = list(islice((m for m in reversed(tail.messages) if m['turnId'] == turn_id and m['role'] == 'assistant'
+                                 and m['ordinal'] >= user['ordinal']), 8)) if tail else []
+            later.extend(self._projected_messages(db, tail, "turn_id=? AND item_type='agentMessage' AND created_at_ms>=?",
+                                                 [turn_id, user['createdAtMs']], 8 - len(later)))
             return {'receivedInHistory': True, 'turnId': user['turnId'], 'userItemId': user['itemId'],
-                'turnStatus': turn['status'] if turn else None,
-                'laterAssistantMessages': [self._format_item(row) for row in reversed(later)], 'objectiveCompletionInferred': False}
-        finally:
-            db.close()
+                'turnStatus': turns[0]['status'] if turns else None,
+                'laterAssistantMessages': list(reversed(later)), 'objectiveCompletionInferred': False}
 
     def allowed_file(self, path):
         resolved = Path(path).resolve(strict=True)

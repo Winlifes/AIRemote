@@ -5,6 +5,7 @@ import sqlite3
 import uuid
 
 from codex_probe import connect_read_only, find_database
+from codex_rollout import is_subagent, spawned_threads
 
 
 class ProjectCatalog:
@@ -104,13 +105,18 @@ class ProjectCatalog:
         try:
             # Titles and grouping only. No history DB, message text, runtime IPC,
             # artifact scan, or first_user_message/preview field is read here.
-            rows = db.execute('SELECT id,name,title,cwd,project_id,history_mode,archived,updated_at FROM threads '
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(threads)')}
+            sources = ''.join(',' + name for name in ('source', 'thread_source') if name in columns)
+            spawned = spawned_threads(db)
+            rows = db.execute('SELECT id,name,title,cwd,project_id,history_mode,archived,updated_at' + sources + ' FROM threads '
                               'WHERE archived=0 AND (' + ' OR '.join(conditions) + ') ORDER BY updated_at DESC,id DESC', values).fetchall()
         finally:
             db.close()
         result = []
         for record in rows:
             row = dict(record)
+            if row['id'] in spawned or is_subagent(row.get('source'), row.get('thread_source')):
+                continue
             if allowed_ids is not None and row['id'] not in allowed_ids:
                 continue
             if self.project_for_row(row, projects, assignments) != project['id']:

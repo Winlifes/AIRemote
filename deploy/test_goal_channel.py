@@ -54,5 +54,21 @@ class GoalLauncherTests(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
         self.assertEqual(run.call_args.args[0], ['/usr/bin/open', '--env', 'CODEX_CLI_PATH=' + str(self.directory.resolve() / 'codex'), '-a', str(self.bundle)])
 
+    def test_restart_readiness_scopes_the_resumable_channel_to_the_new_desktop(self):
+        process_table = '100 1\n101 100\n102 101\n500 1\n501 500\n'
+        with patch.object(channel.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, process_table, '')), \
+             patch.object(channel.GoalOwnerClient, '_records', return_value=[object()]) as records, \
+             patch.object(channel.GoalOwnerClient, '_call', side_effect=[
+                 {'ready': True}, {'ready': True, 'resumeExisting': True},
+             ]):
+            old = channel.status(self.directory, desktop_pid=100)
+            records.assert_called_with({100, 101, 102})
+            self.assertTrue(old['connected'])
+            self.assertFalse(old['resumeExisting'])
+            new = channel.status(self.directory, desktop_pid=500)
+            records.assert_called_with({500, 501})
+            self.assertTrue(new['resumeExisting'])
+            self.assertEqual(new['bundle'], str(self.bundle))
+
 
 if __name__ == '__main__': unittest.main()

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prepare an opt-in Codex CLI launcher; never quit or patch Codex."""
 import argparse
+from collections import defaultdict
 import hashlib
 import json
 import os
@@ -65,19 +66,45 @@ def prepare(directory=DEFAULT_DIRECTORY):
     return {'configured': True, 'launcher': str(launcher), 'bundle': str(bundle), 'codexVersion': info.get('CFBundleShortVersionString')}
 
 
-def status(directory=DEFAULT_DIRECTORY):
+def process_family(desktop_pid):
+    result = subprocess.run(['/bin/ps', '-axo', 'pid=,ppid='], check=True, capture_output=True, text=True)
+    children = defaultdict(list)
+    for line in result.stdout.splitlines():
+        pid, parent = map(int, line.split())
+        children[parent].append(pid)
+    family = set()
+    remaining = [desktop_pid]
+    while remaining:
+        pid = remaining.pop()
+        if pid not in family:
+            family.add(pid)
+            remaining.extend(children[pid])
+    return family
+
+
+def status(directory=DEFAULT_DIRECTORY, desktop_pid=None):
+    result = {'configured': False, 'connected': False, 'resumeExisting': False}
+    try:
+        result['bundle'] = str(locate_codex()[0])
+    except FileNotFoundError:
+        pass
     client = GoalOwnerClient(directory)
     try:
-        records = client._records()
+        records = client._records(process_family(desktop_pid) if desktop_pid is not None else None)
     except (GoalUnavailable, OSError, ValueError):
-        return {'configured': False, 'connected': False}
-    ready = 0
+        return result
+    result['configured'] = True
     for record in records:
         try:
-            ready += int(client._call(record, 'status', {}, timeout=1).get('ready', False))
+            state = client._call(record, 'status', {}, timeout=1)
+            if state.get('ready') is True:
+                result['connected'] = True
+                if state.get('resumeExisting') is True:
+                    result['resumeExisting'] = True
+                    break
         except (RuntimeError, OSError, ValueError, KeyError):
             pass
-    return {'configured': True, 'connected': bool(ready)}
+    return result
 
 
 def launch(directory=DEFAULT_DIRECTORY):
@@ -100,8 +127,12 @@ if __name__ == '__main__':
     action.add_argument('--prepare', action='store_true')
     action.add_argument('--status', action='store_true')
     action.add_argument('--launch', action='store_true')
+    parser.add_argument('--desktop-pid', type=int, help='Check only the given desktop and its own connection processes')
     args = parser.parse_args()
+    if args.desktop_pid is not None and (not args.status or args.desktop_pid <= 1):
+        parser.error('--desktop-pid requires --status and a valid desktop process ID')
     try:
-        print(json.dumps(status() if args.status else launch() if args.launch else prepare(), ensure_ascii=False))
+        print(json.dumps(status(desktop_pid=args.desktop_pid) if args.status else launch() if args.launch else prepare(),
+                         ensure_ascii=False))
     except Exception as error:
         print(json.dumps({'error': str(error)}, ensure_ascii=False)); raise SystemExit(1)

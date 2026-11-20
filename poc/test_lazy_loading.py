@@ -66,6 +66,25 @@ class LazyReadTests(unittest.TestCase):
         self.assertEqual(len(self.catalog.threads(PROJECT, allowed_ids={THREAD})), 1)
         with self.assertRaises(LookupError): self.catalog.threads('77777777-7777-4777-8777-777777777777')
 
+    def test_project_catchall_hides_spawned_and_legacy_subagents(self):
+        edge, legacy, tagged, normal = [str(n) * 8 + '-1111-4111-8111-111111111111' for n in (7, 8, 9, 6)]
+        with sqlite3.connect(self.state) as db:
+            db.executescript('''ALTER TABLE threads ADD COLUMN source TEXT;
+                ALTER TABLE threads ADD COLUMN thread_source TEXT;
+                CREATE TABLE thread_spawn_edges(parent_thread_id TEXT, child_thread_id TEXT, status TEXT);''')
+            db.execute('INSERT INTO thread_spawn_edges VALUES (?,?,?)', (THREAD, edge, 'closed'))
+            for tid, source, classification in [
+                (edge, 'vscode', None),
+                (legacy, json.dumps({'subagent': {'thread_spawn': {'parent_thread_id': THREAD}}}), None),
+                (tagged, 'unknown', 'subagent'), (normal, 'appServer', 'user'),
+            ]:
+                db.execute('INSERT INTO threads VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                           (tid, None, 'Same title', str(self.a), PROJECT, 'paginated', 0, 500, '', '', source, classification))
+        visible = {chat['threadId'] for chat in self.catalog.threads(PROJECT)}
+        self.assertTrue({normal, THREAD} <= visible)
+        self.assertFalse({edge, legacy, tagged} & visible)
+        self.assertEqual(self.catalog.threads(PROJECT, allowed_ids={edge, legacy, tagged}), [])
+
     def test_moved_legacy_chat_follows_native_project_membership(self):
         legacy_id = '77777777-7777-4777-8777-777777777777'
         (self.root / '.codex-global-state.json').write_text(json.dumps({
@@ -148,6 +167,73 @@ class LazyReadTests(unittest.TestCase):
         after = history.message_page(40)
         self.assertEqual(before['messages'][-1]['itemId'], after['messages'][-1]['itemId'])
         self.assertEqual(after['messages'][-1]['text'], 'streamed update')
+
+    def write_rollout(self, history, events, base=None):
+        sessions = self.root / 'sessions'
+        sessions.mkdir(exist_ok=True)
+        path = sessions / 'rollout-test.jsonl'
+        metadata = {'id': THREAD}
+        if base is not None:
+            metadata['history_base'] = {'thread_id': THREAD, 'end_ordinal_exclusive': base, 'end_byte_offset': 80000}
+        header = json.dumps({'type': 'session_meta', 'payload': metadata}).encode() + b'\n'
+        path.write_bytes(header + b''.join(self.rollout_event(e) for e in events))
+        with sqlite3.connect(history.state_path) as db:
+            db.execute('ALTER TABLE threads ADD COLUMN rollout_path TEXT')
+            db.execute('UPDATE threads SET rollout_path=? WHERE id=?', (str(path), THREAD))
+        with sqlite3.connect(history.history_path) as db:
+            db.execute('CREATE TABLE thread_history_projection_state(thread_id TEXT, next_rollout_byte_offset INTEGER, next_rollout_ordinal INTEGER)')
+            db.execute('INSERT INTO thread_history_projection_state VALUES (?,?,?)', (THREAD, 90000 if base is not None else len(header), 120))
+        return path
+
+    @staticmethod
+    def rollout_event(event):
+        return json.dumps({'type': 'event_msg', 'timestamp': '2026-11-20T18:30:01Z', 'payload': event}).encode() + b'\n'
+
+    def test_compacted_segment_replaces_old_branch_and_paginates_into_sqlite(self):
+        history = self.make_history()
+        turn_id = 'replacement'
+        event = {'thread_id': THREAD, 'turn_id': turn_id}
+        self.write_rollout(history, [
+            {**event, 'type': 'task_started', 'started_at': 1200},
+            {**event, 'type': 'item_completed', 'started_at_ms': 1200000, 'item': {
+                'type': 'UserMessage', 'id': 'current-user', 'client_id': 'mobile-client',
+                'content': [{'type': 'text', 'text': 'current question'}]}},
+            {**event, 'type': 'item_completed', 'item': {'type': 'CommandExecution', 'id': 'tool', 'text': 'private tool output'}},
+            {**event, 'type': 'item_completed', 'thread_id': OTHER, 'item': {
+                'type': 'AgentMessage', 'id': 'other-result', 'text': 'another thread'}},
+            {**event, 'type': 'item_completed', 'item': {'type': 'AgentMessage', 'id': 'current-progress',
+                'phase': 'commentary', 'content': [{'type': 'Text', 'text': 'current progress'}]}},
+            {**event, 'type': 'item_completed', 'item': {'type': 'AgentMessage', 'id': 'current-final',
+                'phase': 'final_answer', 'content': [{'type': 'Text', 'text': 'current reply'}]}},
+            {**event, 'type': 'task_complete', 'completed_at': 1207},
+        ], base=118)
+        page = history.message_page(4)
+        self.assertEqual([m['itemId'] for m in page['messages']], ['item-117', 'current-user', 'current-progress', 'current-final'])
+        self.assertEqual([m['text'] for m in page['messages'][-2:]], ['current progress', 'current reply'])
+        older = history.message_page(4, page['olderCursor'])
+        self.assertEqual([m['ordinal'] for m in older['messages']], [113, 114, 115, 116])
+        self.assertEqual(history.snapshot()['turns'][0], {'turn_id': turn_id, 'status': 'completed',
+            'started_at': 1200, 'completed_at': 1207, 'final_agent_item_id': 'current-final'})
+        receipt = history.delivery_receipt('mobile-client')
+        self.assertEqual(receipt['turnStatus'], 'completed')
+        self.assertEqual([m['itemId'] for m in receipt['laterAssistantMessages']], ['current-progress', 'current-final'])
+        self.assertFalse(history.delivery_receipt('client-118')['receivedInHistory'])
+
+    def test_unprojected_tail_resumes_after_a_partial_record(self):
+        history = self.make_history()
+        turn = {'thread_id': THREAD, 'turn_id': 'turn-59'}
+        path = self.write_rollout(history, [{**turn, 'type': 'task_complete', 'completed_at': 9999}])
+        item = self.rollout_event({**turn, 'type': 'item_completed', 'item': {
+            'type': 'AgentMessage', 'id': 'appended', 'text': 'new text', 'phase': 'final_answer'}})
+        with path.open('ab') as out:
+            out.write(item[:-1])
+        self.assertEqual(history.message_page(1)['messages'][0]['itemId'], 'item-119')
+        with path.open('ab') as out:
+            out.write(item[-1:])
+        newest = history.message_page(1)
+        self.assertEqual(newest['messages'][0]['itemId'], 'appended')
+        self.assertEqual(newest['turns'][0]['completed_at'], 9999)
+        self.assertEqual(history.message_page(1, newest['olderCursor'])['messages'][0]['itemId'], 'item-119')
 
     def test_receipt_targets_one_client_message_without_loading_history(self):
         history = self.make_history()

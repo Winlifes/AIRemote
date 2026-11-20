@@ -115,7 +115,7 @@ class GoalOwnerClient:
     def __init__(self, directory=None):
         self.directory = Path(directory or DEFAULT_DIRECTORY)
 
-    def _records(self):
+    def _records(self, process_ids=None):
         try:
             private_path(self.directory, True)
             config = json.loads(private_path(self.directory / 'config.json').read_text())
@@ -129,6 +129,8 @@ class GoalOwnerClient:
             try:
                 row = json.loads(private_path(path).read_text())
                 if type(row.get('pid')) is not int or row['pid'] <= 0:
+                    continue
+                if process_ids is not None and row['pid'] not in process_ids:
                     continue
                 os.kill(row['pid'], 0)
                 name = row['socket']

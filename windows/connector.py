@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 import uuid
 
 from codex_probe import History, LOCAL_LINK, MAX_DOWNLOAD_BYTES, connect_read_only, find_database
+from codex_rollout import is_subagent, spawned_threads
 from protocol import UUID, validate_request
 
 
@@ -68,14 +69,19 @@ class CodexWindows:
         if time.monotonic() < self.expires:
             return self.rows
         rows = {}
+        hidden = set()
         try:
             with closing(connect_read_only(find_database(self.home, 'state'))) as db:
                 columns = {row['name'] for row in db.execute('PRAGMA table_info(threads)')}
-                fields = ','.join(name for name in ('id', 'cwd', 'name', 'title', 'history_mode', 'rollout_path', 'updated_at', 'archived') if name in columns)
+                hidden.update(spawned_threads(db))
+                fields = ','.join(name for name in ('id', 'cwd', 'name', 'title', 'history_mode', 'rollout_path',
+                                                       'updated_at', 'archived', 'source', 'thread_source') if name in columns)
                 if {'id', 'cwd'} <= columns:
                     for record in db.execute('SELECT ' + fields + ' FROM threads'):
                         row = dict(record)
-                        if re.fullmatch(UUID, row['id']) and not row.get('archived') and (root := self.scope(row['cwd'])):
+                        if row.get('archived') or is_subagent(row.get('source'), row.get('thread_source')):
+                            hidden.add(row['id'])
+                        if row['id'] not in hidden and re.fullmatch(UUID, row['id']) and (root := self.scope(row['cwd'])):
                             rows[row['id']] = {**row, 'root': root}
         except (OSError, ValueError, sqlite3.Error):
             pass
@@ -90,7 +96,7 @@ class CodexWindows:
                         meta = json.loads(source.readline(65536))
                     data = meta.get('payload', {}) if meta.get('type') == 'session_meta' else {}
                     tid, cwd = data.get('id', ''), data.get('cwd')
-                    if re.fullmatch(UUID, tid) and (root := self.scope(cwd)):
+                    if tid not in hidden and not is_subagent(data.get('source'), data.get('thread_source')) and re.fullmatch(UUID, tid) and (root := self.scope(cwd)):
                         rows[tid] = {'id': tid, 'cwd': cwd, 'root': root, 'rollout_path': str(path),
                                      'updated_at': int(path.stat().st_mtime), 'title': 'Codex 会话'}
                 except (OSError, ValueError, AttributeError, TypeError):

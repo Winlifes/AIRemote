@@ -9,7 +9,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 FILES = [
     'VERSION', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
-    'windows/app.py', 'windows/connector.py', 'poc/codex_probe.py',
+    'windows/app.py', 'windows/connector.py', 'poc/codex_probe.py', 'poc/codex_rollout.py',
     'relay/agent.py', 'relay/protocol.py', 'relay/local_lock.py',
     'deploy/pair_mac.py', 'deploy/configure_mac.py',
 ]
