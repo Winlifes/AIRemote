@@ -156,6 +156,6 @@ export function runtime(thread?: Thread): { label: string; tone: string; hint: s
     }
     return { label: '空闲', tone: 'blue', hint };
   }
-  if (type === 'notLoaded') return { label: '未加载', tone: 'muted', hint: thread.runtimeSource?.includes('connector-created') ? '历史已同步，发送新指令即可继续' : '历史可读；已有桌面对话需在 Mac 中打开才能继续' };
+  if (type === 'notLoaded') return { label: '未加载', tone: 'muted', hint: '历史已同步，桌面当前未加载此对话' };
   return { label: '状态未知', tone: 'muted', hint: '未取得实时状态，历史记录仍可查看' };
 }

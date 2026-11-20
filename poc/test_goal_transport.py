@@ -17,11 +17,14 @@ from goal_transport import GoalOwnerClient, GoalUnavailable, GoalRPCError, check
 
 THREAD = '11111111-1111-4111-8111-111111111111'
 OTHER = '22222222-2222-4222-8222-222222222222'
+STORED = '33333333-3333-4333-8333-333333333333'
 PROXY = Path(__file__).with_name('goal_transport.py')
 FAKE = '''
 import json,sys
 goal=None
 running=False
+loaded={'11111111-1111-4111-8111-111111111111'}
+stored='33333333-3333-4333-8333-333333333333'
 def send(value): print(json.dumps(value),flush=True)
 for line in sys.stdin:
     value=json.loads(line)
@@ -30,8 +33,18 @@ for line in sys.stdin:
         if params.get('reject'): send({'id':value['id'],'error':{'code':-32600,'message':'fixture rejected handshake'}})
         else: send({'id':value['id'],'result':{'echo':params}})
     elif method=='initialized': pass
-    elif method=='thread/loaded/list': send({'id':value['id'],'result':{'data':['11111111-1111-4111-8111-111111111111'],'nextCursor':None}})
-    elif method=='thread/read': send({'id':value['id'],'result':{'thread':{'id':params['threadId'],'status':{'type':'active' if running else 'idle'},'model':'fixture'}}})
+    elif method=='thread/loaded/list': send({'id':value['id'],'result':{'data':sorted(loaded),'nextCursor':None}})
+    elif method=='thread/read':
+        tid=params['threadId']
+        if tid not in loaded and tid!=stored: send({'id':value['id'],'error':{'message':'not found'}})
+        else:
+            status=('active' if running else 'idle') if tid in loaded else 'notLoaded'
+            send({'id':value['id'],'result':{'thread':{'id':tid,'status':{'type':status},'model':'fixture'}}})
+    elif method=='thread/resume':
+        assert params=={'threadId':stored,'excludeTurns':True}
+        loaded.add(stored)
+        send({'method':'fixture-resume','params':params})
+        send({'id':value['id'],'result':{'thread':{'id':stored}}})
     elif method=='thread/turns/list': send({'id':value['id'],'result':{'data':[{'id':'original-turn'}]}})
     elif method in ('turn/start','turn/steer'):
         running=True
@@ -134,6 +147,19 @@ class GoalProxyTests(unittest.TestCase):
         self.assertEqual(self.client.find_owner(OTHER, conversation=True), (None, True))
         with self.assertRaises(GoalUnavailable):
             self.client.send(OTHER, 'wrong owner', THREAD, owner)
+
+    def test_explicit_desktop_send_loads_the_same_stored_thread(self):
+        self.initialize(notification=False)
+        owner, available = self.client.resume_owner(STORED)
+        self.assertTrue(available)
+        self.assertEqual(self.client.resume_owner(OTHER), (None, True))
+        self.assertEqual(self.client.conversation(STORED, owner)['status']['type'], 'notLoaded')
+        self.assertEqual(self.client.find_owner(STORED, conversation=True), (None, True))
+        self.assertTrue(self.output.empty())
+        self.assertEqual(self.client.continue_chat(STORED, 'Continue saved chat', OTHER, owner), {'turnId': 'original-turn'})
+        self.assertEqual(self.read(), {'method': 'fixture-resume', 'params': {'threadId': STORED, 'excludeTurns': True}})
+        sent = self.read()['params']
+        self.assertEqual((sent['method'], sent['threadId'], sent['clientUserMessageId']), ('turn/start', STORED, OTHER))
 
     def test_failed_native_initialize_never_enables_goal_writes(self):
         self.send({'id': '__codex_initialize__', 'method': 'initialize', 'params': {'reject': True}})

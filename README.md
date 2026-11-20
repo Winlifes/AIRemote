@@ -113,9 +113,9 @@ Claude Code CLI 2.1.326 起可在页面上执行并回读 `/goal`，支持设置
 
 打开聊天后，点击顶部的靶心图标。目标状态条直接附在输入框上方，突出目标内容，状态和处理时间合并在第二行；可直接暂停/继续，通过“更多”查看详情、修改或关闭目标。详情包含已用 tokens 和可选预算。暂停会停止目标的自动推进，当前轮次可能继续；关闭会移除目标，保留对话消息。继续或创建活动目标会恢复自动执行。
 
-新版 Codex 使用 `CODEX_CLI_PATH` 接入原桌面 App Server。正常退出 Codex 后，在 Mac AIRemote 中点击「通过连接通道启动 Codex」，再打开原来的聊天。该通道支持读取运行状态，在同一对话发送指令，以及管理目标。保留旧版桌面 IPC 的读写兼容。
+新版 Codex 使用 `CODEX_CLI_PATH` 接入原桌面 App Server。正常退出 Codex 后，在 Mac AIRemote 中点击「通过连接通道启动 Codex」。从手机发送指令时，仍在运行的桌面 App Server 会按原对话 ID 加载尚未打开的聊天。首次升级到支持此功能的版本后，用该入口重新打开一次 Codex 即可。
 
-源码方式：`python3 deploy/setup_goal_channel.py --prepare` 只准备私有启动器；`--launch` 在 Codex 未运行时以单次进程环境启动，`--status` 只读检查。配置、随机令牌和本用户 Unix socket 位于 `~/.airemote/goal-channel/`，均限制为本用户访问。写入前确认同一个进程已加载目标聊天，原生初始化、回复、通知和审批原样转发。
+源码方式：`python3 deploy/setup_goal_channel.py --prepare` 只准备私有启动器；`--launch` 在 Codex 未运行时以单次进程环境启动，`--status` 只读检查。配置、随机令牌和本用户 Unix socket 位于 `~/.airemote/goal-channel/`，均限制为本用户访问。查看历史按需读取，发送时才加载。目标写入使用当前持有对话的进程，原生初始化、回复、通知和审批原样转发。
 
 能否写入由运行中的 Codex 握手和接口响应决定。目标编辑校验当前内容和状态的版本摘要，写入后在同一进程回读确认。Codex 暂无原子条件写入接口，桌面和手机同时操作仍可能竞争。请求使用幂等键，结果不确定时先核对对话。
 

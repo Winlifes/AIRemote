@@ -90,7 +90,7 @@ def launch(directory=DEFAULT_DIRECTORY):
             'message': '通道已准备好。请先正常退出 Codex，再点击“通过连接通道启动 Codex”。'})
         return result
     subprocess.run(['/usr/bin/open', '--env', 'CODEX_CLI_PATH=' + result['launcher'], '-a', str(bundle)], check=True, capture_output=True)
-    result.update({'launched': True, 'needsRestart': False, 'message': '已通过连接通道启动 Codex。打开原来的对话后即可发送指令和管理目标。'})
+    result.update({'launched': True, 'needsRestart': False, 'message': '已通过连接通道启动 Codex。可以从手机发送指令，继续已有对话。'})
     return result
 
 

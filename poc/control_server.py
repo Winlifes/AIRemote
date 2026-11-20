@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from http.server import ThreadingHTTPServer
 from urllib.parse import quote, urlsplit, parse_qs
@@ -25,7 +26,7 @@ from codex_probe import History, ProbeHandler
 from desktop_ipc import DesktopError, DesktopIPC
 from deepseek_adapter import DeepSeekAdapter, DeepSeekError
 from project_catalog import ProjectCatalog
-from goal_transport import OPEN_CHAT, GoalOwnerClient, GoalUnavailable, GoalRPCError, checked_goal, goal_revision, validate_goal_rpc
+from goal_transport import START_CHANNEL, GoalOwnerClient, GoalUnavailable, GoalRPCError, checked_goal, goal_revision, validate_goal_rpc
 
 
 THREAD_PATTERN = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
@@ -197,7 +198,7 @@ class Controller:
                 'version': info.get('CFBundleShortVersionString'), 'connected': connected, 'readable': readable,
                 'status': 'connected' if connected else 'unavailable',
                 'statusLabel': '已连接' if connected else '桌面通道未连接' if readable else '未连接',
-                'features': features, 'message': '' if connected else OPEN_CHAT}
+                'features': features, 'message': '' if connected else START_CHANNEL}
 
     def session(self, thread_id):
         history = self.history(thread_id)
@@ -336,7 +337,36 @@ class Controller:
             result["replayed"] = False
             return result
 
-    def _send(self, thread_id, text, client_id):
+    def _continue_desktop(self, thread_id, text, client_id, owner, queue_id):
+        if queue_id is not None:
+            ids = [item['id'] for item in self.queue.list(thread_id)]
+            if queue_id in ids[1:]:
+                # Codex can start the first queued submission as soon as it loads the chat.
+                self.queue.reorder(thread_id, [queue_id] + [item for item in ids if item != queue_id])
+            response = (self.desktop_channel.continue_chat(thread_id, text, client_id, owner, queue_id)
+                        if queue_id in ids else {'verifyQueueDelivery': True})
+            if response.get('verifyQueueDelivery'):
+                history = self.history(thread_id)
+                deadline = time.monotonic() + 2
+                while True:
+                    observed = history.delivery_receipt(client_id)
+                    if observed.get('receivedInHistory'):
+                        response = {'turnId': observed['turnId']}
+                        break
+                    if time.monotonic() >= deadline:
+                        if any(item['id'] == queue_id for item in self.queue.list(thread_id)):
+                            raise Conflict('这条指令仍在 Codex 队列中，请刷新查看。')
+                        raise TimeoutError('Codex 队列状态已变化，正等待原对话确认是否收到该指令。')
+                    time.sleep(.1)
+        else:
+            response = self.desktop_channel.continue_chat(thread_id, text, client_id, owner)
+        result = {'threadId': thread_id, 'clientUserMessageId': client_id, 'deliveryState': 'accepted',
+                  'transport': 'original-desktop-stdio-owner', 'desktopReceipt': response}
+        if queue_id is not None:
+            result.update(queueId=queue_id, removedAfterAcceptance=True)
+        return result
+
+    def _send(self, thread_id, text, client_id, queue_id=None):
         # Prefer the original desktop owner, including for a new conversation
         # the user has subsequently opened in the desktop app.
         owner, checked = self.desktop_channel.find_owner(thread_id, conversation=True)
@@ -359,10 +389,18 @@ class Controller:
                 else:
                     return {"threadId": thread_id, "clientUserMessageId": client_id,
                             "deliveryState": "accepted", "transport": "original-desktop-ipc-owner", "desktopReceipt": response}
-        if not checked:
-            raise Conflict(OPEN_CHAT)
         if thread_id not in self.rpc.created_threads and thread_id not in self.recoverable_created:
-            raise Conflict('请先在 Mac 的 Codex 中打开这条已有对话。')
+            owner, available = self.desktop_channel.resume_owner(thread_id)
+            if owner is not None:
+                return self._continue_desktop(thread_id, text, client_id, owner, queue_id)
+            if available:
+                raise Conflict('当前连接的 Codex 未找到这条已保存的对话，请确认桌面账号和设备。')
+            if self.desktop_channel.connected():
+                raise Conflict('请在 Mac 的 AIRemote 中通过连接通道重新启动 Codex，再从手机发送。')
+            if checked:
+                raise Conflict('请先在 Mac 的 Codex 中打开这条已有对话。')
+        if not checked:
+            raise Conflict(START_CHANNEL)
         # Only connector-created conversations can run here; the original
         # desktop conversation can never be resumed in a second process.
         if thread_id not in self.rpc.created_threads:
@@ -444,8 +482,9 @@ class Controller:
             if any(p.get("type") != "text" for p in item["input"]):
                 raise ValueError("This PoC sends text-only queued instructions")
             text = "\n".join(p["text"] for p in item["input"])
-            result = self._send(thread_id, text, item["clientUserMessageId"])
-            result.update({"queueId": item["id"], "removedAfterAcceptance": self.queue.delete(thread_id, item["id"])})
+            result = self._send(thread_id, text, item["clientUserMessageId"], item["id"])
+            if "queueId" not in result:
+                result.update({"queueId": item["id"], "removedAfterAcceptance": self.queue.delete(thread_id, item["id"])})
             return result
         raise ValueError("Unknown operation")
 

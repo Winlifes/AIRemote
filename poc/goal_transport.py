@@ -22,11 +22,12 @@ import time
 import uuid
 
 GOAL_METHODS = {'thread/goal/get', 'thread/goal/set', 'thread/goal/clear'}
-DESKTOP_METHODS = {'desktop/read', 'desktop/send'}
+DESKTOP_METHODS = {'desktop/read', 'desktop/send', 'desktop/continue'}
 STATUSES = {'active', 'paused', 'blocked', 'usageLimited', 'budgetLimited', 'complete'}
 MAX_PACKET = 256 * 1024
 DEFAULT_DIRECTORY = Path.home() / '.airemote/goal-channel'
-OPEN_CHAT = '请在 Mac 的 AIRemote 中通过连接通道启动 Codex，再打开这个对话。'
+START_CHANNEL = '请在 Mac 的 AIRemote 中通过连接通道启动 Codex。'
+OPEN_CHAT = '请通过 Mac AIRemote 的连接通道启动 Codex，再打开这个对话。'
 
 
 class GoalUnavailable(RuntimeError):
@@ -162,18 +163,35 @@ class GoalOwnerClient:
             raise ConnectionError('Codex channel returned an unrecognized response')
         return result
 
-    def connected(self):
+    def _ready_records(self, capability):
         try:
             records = self._records()
         except (GoalUnavailable, OSError, ValueError, KeyError):
-            return False
+            return
         for record in records:
             try:
-                if self._call(record, 'status', {}, timeout=1).get('conversationControl') is True:
-                    return True
+                if self._call(record, 'status', {}, timeout=1).get(capability) is True:
+                    yield record
             except (RuntimeError, OSError, ValueError, KeyError):
                 continue
-        return False
+
+    def connected(self):
+        return next(self._ready_records('conversationControl'), None) is not None
+
+    def resume_owner(self, thread_id):
+        candidates = []
+        available = False
+        for record in self._ready_records('resumeExisting'):
+            available = True
+            try:
+                thread = self.conversation(thread_id, record)
+            except (RuntimeError, OSError, ValueError, KeyError):
+                continue
+            if thread.get('id') == thread_id:
+                candidates.append(record)
+        if len(candidates) > 1:
+            raise GoalUnavailable('多个 Codex 桌面进程都能读取此对话，请在 Mac 确认当前对话。')
+        return (candidates[0] if candidates else None), available
 
     def find_owner(self, thread_id, *, conversation=False):
         checked_thread_id(thread_id)
@@ -219,6 +237,12 @@ class GoalOwnerClient:
     def send(self, thread_id, text, message_id, owner):
         return self._call(owner, 'desktop/send', {'threadId': thread_id, 'text': text,
                                                  'clientUserMessageId': message_id}, timeout=30)
+
+    def continue_chat(self, thread_id, text, message_id, owner, queue_id=None):
+        params = {'threadId': thread_id, 'text': text, 'clientUserMessageId': message_id}
+        if queue_id is not None:
+            params['queuedSubmissionId'] = queue_id
+        return self._call(owner, 'desktop/continue', params, timeout=60)
 
 
 class StdioGoalProxy:
@@ -342,21 +366,48 @@ class StdioGoalProxy:
         return {key: thread.get(key) for key in ('id', 'status', 'model', 'reasoningEffort', 'canAcceptDirectInput')}
 
     def desktop_call(self, method, params):
-        fields = {'threadId'} if method == 'desktop/read' else {'threadId', 'text', 'clientUserMessageId'}
-        if not isinstance(params, dict) or set(params) != fields:
+        if not isinstance(params, dict):
             raise ValueError('Invalid desktop conversation request')
-        tid = checked_thread_id(params['threadId'])
-        if tid not in self.loaded_threads():
-            raise GoalUnavailable(OPEN_CHAT)
-        thread = self.read_conversation(tid)
+        tid = checked_thread_id(params.get('threadId'))
         if method == 'desktop/read':
-            return thread
+            if set(params) != {'threadId'}:
+                raise ValueError('Invalid desktop read request')
+            return self.read_conversation(tid)
+        fields = {'threadId', 'text', 'clientUserMessageId'}
+        if method == 'desktop/continue' and 'queuedSubmissionId' in params:
+            fields.add('queuedSubmissionId')
+        if set(params) != fields:
+            raise ValueError('Invalid desktop send request')
         text = params['text']
         if not isinstance(text, str) or not text.strip():
             raise ValueError('Message text must not be empty')
+        message_id = checked_thread_id(params['clientUserMessageId'])
+        queue_id = checked_thread_id(params['queuedSubmissionId']) if 'queuedSubmissionId' in params else None
+        loaded = tid in self.loaded_threads()
+        if not loaded and method != 'desktop/continue':
+            raise GoalUnavailable(OPEN_CHAT)
+        thread = self.read_conversation(tid)
         if thread.get('canAcceptDirectInput') is False:
             raise GoalUnavailable('当前 Codex 对话不接受直接输入。')
-        request = {'threadId': tid, 'clientUserMessageId': checked_thread_id(params['clientUserMessageId']),
+        if not loaded:
+            resumed = self.rpc('thread/resume', {'threadId': tid, 'excludeTurns': True}, timeout=30)
+            native_thread = resumed.get('thread') if isinstance(resumed, dict) else None
+            if not isinstance(native_thread, dict) or native_thread.get('id') != tid or tid not in self.loaded_threads():
+                raise GoalUnavailable('Codex 未确认加载原对话。')
+            thread = self.read_conversation(tid)
+            if thread.get('canAcceptDirectInput') is False:
+                raise GoalUnavailable('当前 Codex 对话不接受直接输入。')
+        if queue_id is not None:
+            try:
+                result = self.rpc('thread/queue/start', {'threadId': tid, 'queuedSubmissionId': queue_id})
+            except GoalRPCError:
+                # The native queue may have already claimed the item on resume.
+                return {'verifyQueueDelivery': True}
+            turn = result.get('turn') if isinstance(result, dict) else None
+            if not isinstance(turn, dict) or not isinstance(turn.get('id'), str) or not turn['id']:
+                raise ConnectionError('Codex returned an unrecognized queue acknowledgement')
+            return {'turnId': turn['id']}
+        request = {'threadId': tid, 'clientUserMessageId': message_id,
                    'input': [{'type': 'text', 'text': text, 'text_elements': []}]}
         status = thread['status'].get('type')
         if status == 'idle':
@@ -393,7 +444,7 @@ class StdioGoalProxy:
                     if method == 'status' and params == {}:
                         if ready:
                             next(self.loaded_threads(timeout=.7), None)
-                        result = {'ready': ready, 'conversationControl': ready}
+                        result = {'ready': ready, 'conversationControl': ready, 'resumeExisting': ready}
                     elif not ready:
                         raise GoalUnavailable('Original desktop initialization is not ready')
                     elif method in DESKTOP_METHODS:

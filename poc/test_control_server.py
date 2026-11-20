@@ -141,6 +141,19 @@ class WriteSafetyTests(unittest.TestCase):
         self.assertIn('send', codex['features'])
         self.assertIn('queue-send', codex['features'])
 
+    def test_existing_stored_chat_uses_desktop_resume_without_sidecar(self):
+        def legacy_unavailable():
+            raise ConnectionRefusedError()
+
+        self.controller.desktop_factory = legacy_unavailable
+        channel = self.controller.desktop_channel
+        with patch.object(channel, 'resume_owner', return_value=('desktop-owner', True)), \
+             patch.object(channel, 'continue_chat', return_value={'turnId': 'native-turn'}) as send:
+            _, result = self.request('POST', '/api/threads/'+THREAD+'/messages', {'text': 'Continue closed chat'})
+        self.assertEqual(result['result']['transport'], 'original-desktop-stdio-owner')
+        send.assert_called_once_with(THREAD, 'Continue closed chat', result['result']['clientUserMessageId'], 'desktop-owner')
+        self.assertEqual(self.rpc.calls, [])
+
     def test_agent_heartbeat_does_not_read_projects_or_history(self):
         def forbidden():
             raise AssertionError('Health must not load the project directory')
