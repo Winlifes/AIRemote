@@ -149,7 +149,13 @@ export function runtime(thread?: Thread): { label: string; tone: string; hint: s
   const flags = thread.runtimeStatus && typeof thread.runtimeStatus === 'object' ? thread.runtimeStatus.activeFlags || [] : [];
   if (flags.some(f => /approval|input|attention/i.test(f))) return { label: '等待处理', tone: 'amber', hint: '请在 Mac 上处理审批或补充输入' };
   if (type === 'active') return { label: '运行中', tone: 'green', hint: '已从 Mac 读取到实时运行状态' };
-  if (type === 'idle') return { label: '空闲', tone: 'blue', hint: thread.latestPersistedTurnStatus === 'completed' ? '上一轮已完成，随时可以继续' : '当前没有正在执行的轮次' };
+  if (type === 'idle') {
+    let hint = '当前没有正在执行的轮次';
+    if (thread.latestPersistedTurnStatus === 'completed') {
+      hint = thread.writeAvailable === false ? '上一轮已完成' : '上一轮已完成，随时可以继续';
+    }
+    return { label: '空闲', tone: 'blue', hint };
+  }
   if (type === 'notLoaded') return { label: '未加载', tone: 'muted', hint: thread.runtimeSource?.includes('connector-created') ? '历史已同步，发送新指令即可继续' : '历史可读；已有桌面对话需在 Mac 中打开才能继续' };
   return { label: '状态未知', tone: 'muted', hint: '未取得实时状态，历史记录仍可查看' };
 }

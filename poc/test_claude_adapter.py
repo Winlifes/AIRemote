@@ -77,7 +77,9 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertFalse(self.adapter.session(self.tid)['writeAvailable'])
         self.cli.current = {}
         self.cli.mode = None
-        self.assertFalse(self.adapter.session(self.tid)['writeAvailable'])
+        session = self.adapter.session(self.tid)
+        self.assertEqual(session['runtimeStatus']['type'], 'idle')
+        self.assertFalse(session['writeAvailable'])
         self.cli.mode = 'manual'
         self.assertTrue(self.adapter.session(self.tid)['writeAvailable'])
 

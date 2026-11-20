@@ -12,6 +12,11 @@ test('metadata-only chat rows can have no live runtime yet', () => {
   assert.equal(runtime({ runtimeStatus: null }).label, '状态未知');
   assert.equal(runtime({ runtimeStatus: undefined }).label, '状态未知');
 });
+test('idle read-only sessions report completion without offering to continue', () => {
+  assert.deepEqual(runtime({ runtimeStatus: 'idle', latestPersistedTurnStatus: 'completed', writeAvailable: false }), {
+    label: '空闲', tone: 'blue', hint: '上一轮已完成',
+  });
+});
 test('native approvals stay visible rather than looking completed', () => {
   assert.equal(runtime({ runtimeStatus: { type: 'active', activeFlags: ['approval'] } }).label, '等待处理');
 });

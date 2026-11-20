@@ -381,10 +381,10 @@ class ClaudeAdapter:
             runtime = 'active'
         elif status in ('waiting', 'waiting_for_input', 'needs_input', 'waiting_for_permission', 'blocked'):
             runtime, flags = 'active', ['needsInput']
-        elif status in ('idle', 'done', 'completed', 'stopped'):
+        elif (live is not None and native is None) or status in ('idle', 'done', 'completed', 'stopped'):
             runtime = 'idle'
         else:
-            runtime = 'notLoaded' if live is not None and native is None else None
+            runtime = None
         reason = ''
         if running:
             reason = 'Claude Code 正在处理本轮指令。'
