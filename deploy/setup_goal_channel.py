@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import plistlib
 import secrets
 import shlex
 import subprocess
@@ -13,25 +12,15 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'poc'))
-from goal_transport import DEFAULT_DIRECTORY, TESTED_GOAL_VERSIONS, GoalOwnerClient, GoalUnavailable, private_path
+from app_server_rpc import find_codex_installation
+from goal_transport import DEFAULT_DIRECTORY, GoalOwnerClient, GoalUnavailable, private_path
 
 
 def locate_codex():
-    for bundle in (Path('/Applications/ChatGPT.app'), Path('/Applications/Codex.app')):
-        info_file = bundle / 'Contents/Info.plist'
-        if not info_file.is_file():
-            continue
-        info = plistlib.loads(info_file.read_bytes())
-        if info.get('CFBundleIdentifier') != 'com.openai.codex':
-            continue
-        version = info.get('CFBundleShortVersionString')
-        if version not in TESTED_GOAL_VERSIONS:
-            raise ValueError('此 Codex 版本的目标控制尚未验证，请先更新 AIRemote。')
-        executable = bundle / 'Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'
-        if not executable.is_file() or not os.access(executable, os.X_OK):
-            raise FileNotFoundError('Codex bundled CLI not found')
-        return bundle, info, executable
-    raise FileNotFoundError('请先安装 Codex 桌面客户端。')
+    bundle, info, executable = find_codex_installation()
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise FileNotFoundError('Codex bundled CLI not found')
+    return bundle, info, executable
 
 
 def prepare(directory=DEFAULT_DIRECTORY):
@@ -64,7 +53,7 @@ def prepare(directory=DEFAULT_DIRECTORY):
     fd = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, 'w') as stream:
         json.dump({'token': token, 'executable': str(executable), 'bundleInfo': str(bundle / 'Contents/Info.plist'),
-                   'codexVersion': info['CFBundleShortVersionString']}, stream)
+                   'codexVersion': info.get('CFBundleShortVersionString')}, stream)
     os.replace(temporary, config_path)
     launcher = directory / 'codex'
     content = '#!/bin/sh\nexec /usr/bin/python3 ' + shlex.quote(str(target)) + ' --config ' + shlex.quote(str(config_path)) + ' -- "$@"\n'
@@ -73,7 +62,7 @@ def prepare(directory=DEFAULT_DIRECTORY):
     with os.fdopen(fd, 'w') as stream:
         stream.write(content)
     os.replace(next_launcher, launcher)
-    return {'configured': True, 'launcher': str(launcher), 'bundle': str(bundle), 'codexVersion': info['CFBundleShortVersionString']}
+    return {'configured': True, 'launcher': str(launcher), 'bundle': str(bundle), 'codexVersion': info.get('CFBundleShortVersionString')}
 
 
 def status(directory=DEFAULT_DIRECTORY):
@@ -98,10 +87,10 @@ def launch(directory=DEFAULT_DIRECTORY):
     processes = subprocess.run(['/bin/ps', '-axww', '-o', 'comm='], capture_output=True, text=True, check=True).stdout.splitlines()
     if executable in [value.strip() for value in processes]:
         result.update({'launched': False, 'needsRestart': True,
-            'message': '通道已准备好。请先正常退出 Codex，再点击“通过目标通道启动 Codex”。正在运行的任务不会被自动关闭。'})
+            'message': '通道已准备好。请先正常退出 Codex，再点击“通过连接通道启动 Codex”。'})
         return result
     subprocess.run(['/usr/bin/open', '--env', 'CODEX_CLI_PATH=' + result['launcher'], '-a', str(bundle)], check=True, capture_output=True)
-    result.update({'launched': True, 'needsRestart': False, 'message': '已通过目标通道启动 Codex。打开原来的对话后即可管理目标。'})
+    result.update({'launched': True, 'needsRestart': False, 'message': '已通过连接通道启动 Codex。打开原来的对话后即可发送指令和管理目标。'})
     return result
 
 

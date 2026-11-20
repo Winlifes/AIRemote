@@ -3,7 +3,7 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing, contextmanager, nullcontext
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from datetime import datetime, timezone
 import hashlib
 import hmac
@@ -12,7 +12,6 @@ import json
 import mimetypes
 import os
 from pathlib import Path
-import plistlib
 import re
 import sqlite3
 import threading
@@ -20,13 +19,13 @@ import uuid
 from http.server import ThreadingHTTPServer
 from urllib.parse import quote, urlsplit, parse_qs
 
-from app_server_rpc import AppServerRPC, NativeQueue, RPCError
+from app_server_rpc import AppServerRPC, NativeQueue, RPCError, find_codex_installation
 from claude_adapter import ClaudeAdapter, ClaudeError
 from codex_probe import History, ProbeHandler
-from desktop_ipc import DesktopError, DesktopIPC, TESTED_DESKTOP_VERSIONS
+from desktop_ipc import DesktopError, DesktopIPC
 from deepseek_adapter import DeepSeekAdapter, DeepSeekError
 from project_catalog import ProjectCatalog
-from goal_transport import GoalOwnerClient, GoalUnavailable, GoalRPCError, checked_goal, goal_revision, validate_goal_rpc
+from goal_transport import OPEN_CHAT, GoalOwnerClient, GoalUnavailable, GoalRPCError, checked_goal, goal_revision, validate_goal_rpc
 
 
 THREAD_PATTERN = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
@@ -124,7 +123,7 @@ class Journal:
 
 
 class Controller:
-    def __init__(self, threads, artifact_roots, workspace_roots, directory, rpc=None, desktop_factory=DesktopIPC, discover_desktop_projects=False, goal_client=None):
+    def __init__(self, threads, artifact_roots, workspace_roots, directory, rpc=None, desktop_factory=DesktopIPC, discover_desktop_projects=False, goal_client=None, desktop_channel=None):
         self.initial_threads = {str(uuid.UUID(t)) for t in threads}
         self.artifact_roots = [Path(p).resolve(strict=True) for p in artifact_roots]
         self.workspace_roots = [Path(p).resolve(strict=True) for p in workspace_roots]
@@ -146,10 +145,9 @@ class Controller:
         self.claude = ClaudeAdapter(Journal(state_directory / 'providers/claude'),
             self.artifact_roots, self.workspace_roots, discover_desktop=discover_desktop_projects)
         self.desktop_factory = desktop_factory
-        self.goal_client = goal_client or GoalOwnerClient()
-        # A new desktop version can still serve read-only snapshots. Keep the
-        # write version gate separate so an upgrade cannot silently freeze history.
-        self.desktop_reader = (lambda: DesktopIPC(read_only=True)) if desktop_factory is DesktopIPC else desktop_factory
+        self.desktop_channel = desktop_channel or GoalOwnerClient()
+        self.goal_client = goal_client or self.desktop_channel
+        self.desktop_reader = (lambda: DesktopIPC(timeout=2, read_only=True)) if desktop_factory is DesktopIPC else desktop_factory
         self.lock = threading.RLock()
         self.owns_rpc = rpc is None
         try:
@@ -179,6 +177,28 @@ class Controller:
     def history(self, thread_id):
         return History(self.allowed(thread_id), self.artifact_roots)
 
+    def codex_descriptor(self):
+        try:
+            _, info, _ = find_codex_installation()
+        except FileNotFoundError:
+            info = {}
+        connected = self.desktop_channel.connected()
+        if not connected:
+            try:
+                with self.desktop_reader():
+                    connected = True
+            except (OSError, RuntimeError, ValueError):
+                pass
+        readable = connected or any((Path.home() / '.codex').glob('thread_history_*.sqlite'))
+        features = ['projects', 'messages', 'runtime-status', 'artifacts', 'queue', 'goals']
+        if connected:
+            features += ['send', 'create', 'queue-edit', 'queue-delete', 'queue-send', 'queue-reorder']
+        return {'id': 'codex', 'name': 'Codex', 'clientName': 'Codex', 'installed': bool(info) or connected,
+                'version': info.get('CFBundleShortVersionString'), 'connected': connected, 'readable': readable,
+                'status': 'connected' if connected else 'unavailable',
+                'statusLabel': '已连接' if connected else '桌面通道未连接' if readable else '未连接',
+                'features': features, 'message': '' if connected else OPEN_CHAT}
+
     def session(self, thread_id):
         history = self.history(thread_id)
         result = history.snapshot()
@@ -187,18 +207,22 @@ class Controller:
         if self.discover_desktop_projects:
             result['projectId'] = self.catalog.project_for_thread(thread_id)
         try:
-            with self.desktop_reader() as desktop:
-                # Read-only status must not hold the mobile inbox behind an
-                # unloaded desktop view. Mutating delivery keeps its full timeout.
-                desktop.timeout = 2
-                snapshot = desktop.state(thread_id)
-                native_state = snapshot['conversationState']
-            result.update({"runtimeStatus": snapshot["conversationState"].get("threadRuntimeStatus"),
-                           "runtimeSource": "original desktop IPC owner",
-                           "runtimeStatusNote": "Observed directly from the existing desktop owner.",
-                           "ownerClientId": snapshot["ownerClientId"],
-                           "modelSettings": desktop_model_settings(snapshot["conversationState"])})
-        except (DesktopError, ConnectionError, TimeoutError, OSError, RuntimeError, ValueError) as error:
+            owner, _ = self.desktop_channel.find_owner(thread_id, conversation=True)
+            if owner is not None:
+                current = self.desktop_channel.conversation(thread_id, owner)
+                result.update(runtimeStatus=current['status'], runtimeSource='original desktop app-server',
+                              runtimeStatusNote='Observed directly from the existing desktop owner.',
+                              modelSettings=desktop_model_settings({'latestModel': current.get('model'),
+                                  'latestReasoningEffort': current.get('reasoningEffort')}))
+            else:
+                with self.desktop_reader() as desktop:
+                    snapshot = desktop.state(thread_id)
+                    native_state = snapshot['conversationState']
+                result.update(runtimeStatus=native_state.get('threadRuntimeStatus'),
+                              runtimeSource='original desktop IPC owner',
+                              runtimeStatusNote='Observed directly from the existing desktop owner.',
+                              ownerClientId=snapshot['ownerClientId'], modelSettings=desktop_model_settings(native_state))
+        except (OSError, RuntimeError, ValueError, KeyError) as error:
             result['runtimeStatusNote'] = 'Live desktop status unavailable: ' + type(error).__name__
             if thread_id in self.rpc.created_threads or thread_id in self.recoverable_created:
                 thread = self.rpc.request("thread/read", {"threadId": thread_id})["thread"]
@@ -315,16 +339,30 @@ class Controller:
     def _send(self, thread_id, text, client_id):
         # Prefer the original desktop owner, including for a new conversation
         # the user has subsequently opened in the desktop app.
-        try:
-            with self.desktop_factory() as desktop:
-                response = desktop.send(thread_id, text, client_id)
+        owner, checked = self.desktop_channel.find_owner(thread_id, conversation=True)
+        if owner is not None:
+            response = self.desktop_channel.send(thread_id, text, client_id, owner)
             return {"threadId": thread_id, "clientUserMessageId": client_id,
-                    "deliveryState": "accepted", "transport": "original-desktop-ipc-owner", "desktopReceipt": response}
-        except DesktopError as error:
-            if error.response.get("error") != "no-client-found":
-                raise
-            if thread_id not in self.rpc.created_threads and thread_id not in self.recoverable_created:
-                raise Conflict("No desktop owner is loaded. Open this existing conversation in Codex first; a second runtime will not be started for it.") from error
+                    "deliveryState": "accepted", "transport": "original-desktop-stdio-owner", "desktopReceipt": response}
+        with ExitStack() as stack:
+            try:
+                desktop = stack.enter_context(self.desktop_factory())
+            except (FileNotFoundError, ConnectionRefusedError, ValueError):
+                desktop = None
+            if desktop is not None:
+                try:
+                    response = desktop.send(thread_id, text, client_id)
+                except DesktopError as error:
+                    if error.response.get("error") != "no-client-found":
+                        raise
+                    checked = True
+                else:
+                    return {"threadId": thread_id, "clientUserMessageId": client_id,
+                            "deliveryState": "accepted", "transport": "original-desktop-ipc-owner", "desktopReceipt": response}
+        if not checked:
+            raise Conflict(OPEN_CHAT)
+        if thread_id not in self.rpc.created_threads and thread_id not in self.recoverable_created:
+            raise Conflict('请先在 Mac 的 Codex 中打开这条已有对话。')
         # Only connector-created conversations can run here; the original
         # desktop conversation can never be resumed in a second process.
         if thread_id not in self.rpc.created_threads:
@@ -468,23 +506,8 @@ class ControlHandler(ProbeHandler):
                 healthy = not getattr(controller.rpc, 'closed', False)
                 self.respond(200 if healthy else 503, {'ok': healthy, 'version': '0.5.0'})
             elif path == '/api/providers':
-                codex_online = not getattr(controller.rpc, 'closed', False)
-                codex_version = None
-                try:
-                    codex_version = plistlib.loads(Path('/Applications/ChatGPT.app/Contents/Info.plist').read_bytes()).get('CFBundleShortVersionString')
-                    with controller.desktop_reader() as desktop:
-                        desktop.timeout = 2
-                except (OSError, RuntimeError, ConnectionError):
-                    codex_online = False
-                codex_write = codex_online and codex_version in TESTED_DESKTOP_VERSIONS
-                codex_readable = codex_online or any((Path.home() / '.codex').glob('thread_history_*.sqlite'))
                 self.respond(200, {'providers': [
-                    {'id': 'codex', 'name': 'Codex', 'clientName': 'Codex', 'installed': True,
-                     'version': codex_version,
-                     'connected': codex_online, 'readable': codex_readable,
-                     'status': 'connected' if codex_online else 'unavailable',
-                     'statusLabel': ('已连接' if codex_write else '已连接 · 写入版本待验证') if codex_online else '客户端未连接，历史可读',
-                     'features': ['projects', 'messages', 'runtime-status', 'artifacts', 'queue', 'goals'] + (['send', 'create', 'queue-edit', 'queue-delete', 'queue-send', 'queue-reorder'] if codex_write else [])},
+                    controller.codex_descriptor(),
                     controller.deepseek.descriptor(), controller.claude.descriptor()]})
             elif path.startswith('/api/providers/deepseek/'):
                 return self.provider_get(controller.deepseek, path.removeprefix('/api/providers/deepseek'), 'session-')

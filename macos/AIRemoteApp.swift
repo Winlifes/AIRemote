@@ -366,10 +366,10 @@ struct ControlView: View {
             }.buttonStyle(.bordered).disabled(model.busy || model.updating)
             VStack(alignment: .leading, spacing: 7) {
                 Button { model.launchGoalChannel() } label: {
-                    Label(model.goalChannel.connected ? "Codex 目标通道已连接" : "通过目标通道启动 Codex", systemImage: "target")
+                    Label(model.goalChannel.connected ? "Codex 连接通道已启用" : "通过连接通道启动 Codex", systemImage: "link")
                         .frame(maxWidth: .infinity)
                 }.buttonStyle(.bordered).disabled(model.busy || model.goalChannel.connected)
-                Text(model.goalMessage.isEmpty ? "首次启用：先正常退出 Codex，再用此按钮打开。原有对话会保留。" : model.goalMessage)
+                Text(model.goalMessage.isEmpty ? "首次启用请先正常退出 Codex，再用此按钮打开。" : model.goalMessage)
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Divider()

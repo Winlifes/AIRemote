@@ -21,6 +21,7 @@ PROXY = Path(__file__).with_name('goal_transport.py')
 FAKE = '''
 import json,sys
 goal=None
+running=False
 def send(value): print(json.dumps(value),flush=True)
 for line in sys.stdin:
     value=json.loads(line)
@@ -30,6 +31,12 @@ for line in sys.stdin:
         else: send({'id':value['id'],'result':{'echo':params}})
     elif method=='initialized': pass
     elif method=='thread/loaded/list': send({'id':value['id'],'result':{'data':['11111111-1111-4111-8111-111111111111'],'nextCursor':None}})
+    elif method=='thread/read': send({'id':value['id'],'result':{'thread':{'id':params['threadId'],'status':{'type':'active' if running else 'idle'},'model':'fixture'}}})
+    elif method=='thread/turns/list': send({'id':value['id'],'result':{'data':[{'id':'original-turn'}]}})
+    elif method in ('turn/start','turn/steer'):
+        running=True
+        send({'method':'fixture-turn','params':{'method':method,**params}})
+        send({'id':value['id'],'result':{'turn':{'id':'original-turn'}} if method=='turn/start' else {'turnId':'original-turn'}})
     elif method=='thread/goal/get': send({'id':value['id'],'result':{'goal':goal}})
     elif method=='thread/goal/set':
         goal=goal or {'threadId':params['threadId'],'objective':'','status':'paused','tokenBudget':None,'tokensUsed':0,'timeUsedSeconds':0,'createdAt':10,'updatedAt':10}
@@ -55,7 +62,7 @@ class GoalProxyTests(unittest.TestCase):
         info = self.root / 'Info.plist'; info.write_bytes(plistlib.dumps({'CFBundleShortVersionString': '26.1111.21308'}))
         self.token = secrets.token_urlsafe(32)
         config = self.root / 'config.json'
-        config.write_text(json.dumps({'token': self.token, 'executable': str(fake), 'bundleInfo': str(info), 'codexVersion': '26.1111.21308'})); config.chmod(0o600)
+        config.write_text(json.dumps({'token': self.token, 'executable': str(fake), 'bundleInfo': str(info), 'codexVersion': '99.0.0'})); config.chmod(0o600)
         self.process = subprocess.Popen([sys.executable, str(PROXY), '--config', str(config), '--', 'app-server'],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.output = queue.Queue()
@@ -112,6 +119,21 @@ class GoalProxyTests(unittest.TestCase):
         result = self.client.request('thread/goal/set', {'threadId': THREAD, 'objective': 'one phase fixture', 'status': 'paused', 'origin': 'user'}, owner)
         self.assertEqual(result['goal']['status'], 'paused')
         self.assertEqual(self.read()['method'], 'thread/goal/updated')
+
+    def test_desktop_uses_loaded_owner_for_start_and_steer(self):
+        self.initialize(notification=False)
+        self.assertTrue(self.client.connected())
+        owner, checked = self.client.find_owner(THREAD, conversation=True)
+        self.assertTrue(checked)
+        self.assertEqual(self.client.conversation(THREAD, owner)['status']['type'], 'idle')
+        for method in ('turn/start', 'turn/steer'):
+            result = self.client.send(THREAD, '继续原会话', OTHER, owner)
+            self.assertEqual(result, {'turnId': 'original-turn'})
+            observed = self.read()['params']
+            self.assertEqual((observed['method'], observed['threadId'], observed['clientUserMessageId']), (method, THREAD, OTHER))
+        self.assertEqual(self.client.find_owner(OTHER, conversation=True), (None, True))
+        with self.assertRaises(GoalUnavailable):
+            self.client.send(OTHER, 'wrong owner', THREAD, owner)
 
     def test_failed_native_initialize_never_enables_goal_writes(self):
         self.send({'id': '__codex_initialize__', 'method': 'initialize', 'params': {'reject': True}})

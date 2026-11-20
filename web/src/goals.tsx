@@ -64,7 +64,7 @@ export function GoalControl({ state, providerName, claude, open, close, show, on
       {error && <p className="error-text" role="alert">{error}</p>}
       {feedback && <p className="goal-feedback" role="status">{feedback}</p>}
       {!state?.readable && <p className="modal-description">目标状态暂未同步。连接 Mac 后刷新此对话。</p>}
-      {state?.readable && !state.writable && <p className="goal-setup" role="status">{state.message || '请在 Mac AIRemote 中启用目标通道。'}{!claude && <small>首次启用：正常退出 Codex，再点 Mac AIRemote 的“通过目标通道启动 Codex”。</small>}</p>}
+      {state?.readable && !state.writable && <p className="goal-setup" role="status">{state.message || '请在 Mac AIRemote 中启用连接通道。'}</p>}
       {!online && <p className="error-text">Mac 未连接，当前内容可能已变化。</p>}
       {closing && goal ? <div className="goal-close-confirm"><p>关闭这个目标？</p><span>目标将从当前对话移除，对话消息会保留。{!claude && '正在执行的这一轮仍可能继续。'}</span><div className="modal-actions"><button className="secondary" disabled={busy} onClick={() => setClosing(false)}>保留目标</button><button className="primary danger-bg" disabled={!editable} onClick={() => act('DELETE', {})}>关闭目标</button></div></div>
       : (editing || !goal) && state?.readable ? <GoalEditor key={editing ? 'edit' : 'new'} state={state} claude={claude} providerName={providerName} enabled={editable} busy={busy} cancel={goal ? () => setEditing(false) : dismiss} submit={data => act(goal ? 'PATCH' : 'POST', data)} />

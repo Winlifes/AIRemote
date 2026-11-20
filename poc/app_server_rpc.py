@@ -10,6 +10,7 @@ from collections import deque
 import json
 import os
 from pathlib import Path
+import plistlib
 import shutil
 import subprocess
 import threading
@@ -23,18 +24,32 @@ class RPCError(RuntimeError):
         super().__init__(method + ": " + str(error.get("message", error)))
 
 
+def find_codex_installation():
+    for bundle in map(Path, ('/Applications/ChatGPT.app', '/Applications/Codex.app')):
+        try:
+            info = plistlib.loads((bundle / 'Contents/Info.plist').read_bytes())
+        except (OSError, ValueError, plistlib.InvalidFileException):
+            continue
+        if isinstance(info, dict) and info.get('CFBundleIdentifier') == 'com.openai.codex':
+            cli = bundle / 'Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'
+            return bundle, info, cli
+    raise FileNotFoundError('请先安装 Codex 桌面客户端。')
+
+
 def find_codex_executable(executable=None):
-    """Finder/Terminal do not inherit the Codex desktop app's private PATH."""
+    """Use the bundled App Server when it is available on this Mac."""
     if executable:
         # Preserve explicit test/embedded transports; Popen validates on entry.
         return str(executable)
+    try:
+        _, _, candidate = find_codex_installation()
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    except FileNotFoundError:
+        pass
     candidate = shutil.which('codex')
     if candidate:
         return candidate
-    for bundle in ('/Applications/ChatGPT.app', '/Applications/Codex.app'):
-        candidate = Path(bundle) / 'Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
     raise FileNotFoundError('Codex CLI is not available; install/open the Codex desktop app first')
 
 

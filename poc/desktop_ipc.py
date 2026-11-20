@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Version-pinned client of the desktop's local conversation coordination bus.
+"""Client of the desktop's local conversation coordination bus.
 
 Uses a same-user private socket and registers transparently as `airemote`.
 It never impersonates an existing client, changes peer validation, opens the
@@ -12,7 +12,6 @@ from collections import deque
 import json
 import os
 from pathlib import Path
-import plistlib
 import socket
 import stat
 import struct
@@ -21,7 +20,6 @@ import uuid
 
 
 MAX_FRAME_BYTES = 64 * 1024 * 1024
-TESTED_DESKTOP_VERSIONS = {"26.1103.60933", "26.1106.51428", "26.1111.21308"}
 READ_METHODS = {'initialize', 'thread-owner-discovery', 'thread-follower-read-model-settings'}
 VERSIONS = {
     "initialize": 0,
@@ -45,7 +43,6 @@ class DesktopError(RuntimeError):
 
 class DesktopIPC:
     def __init__(self, socket_path=None, timeout=15, read_only=False):
-        self.default_socket = socket_path is None
         self.socket_path = Path(socket_path or Path.home() / ".codex/ipc/ipc.sock")
         self.timeout = timeout
         self.read_only = read_only
@@ -55,11 +52,6 @@ class DesktopIPC:
         self.socket = None
 
     def __enter__(self):
-        if self.default_socket:
-            info = plistlib.loads(Path("/Applications/ChatGPT.app/Contents/Info.plist").read_bytes())
-            version = info.get("CFBundleShortVersionString")
-            if not self.read_only and version not in TESTED_DESKTOP_VERSIONS:
-                raise RuntimeError("Desktop IPC adapter needs validation for app version " + str(version))
         node = self.socket_path.lstat()
         parent = self.socket_path.parent.stat()
         if not stat.S_ISSOCK(node.st_mode) or node.st_uid != os.getuid() or node.st_mode & 0o077:
@@ -71,7 +63,11 @@ class DesktopIPC:
         try:
             self.socket.connect(str(self.socket_path))
             response = self.request("initialize", {"clientType": "airemote"})
-            self.client_id = response["result"]["clientId"]
+            result = response.get("result")
+            client_id = result.get("clientId") if isinstance(result, dict) else None
+            if not isinstance(client_id, str) or not client_id:
+                raise ValueError("Codex desktop IPC returned an unsupported handshake")
+            self.client_id = client_id
             return self
         except BaseException:
             self.socket.close()
@@ -110,6 +106,8 @@ class DesktopIPC:
         if not 0 < size <= MAX_FRAME_BYTES:
             raise ValueError("Desktop returned an invalid frame length")
         value = json.loads(self._exact(size))
+        if not isinstance(value, dict):
+            raise ValueError("Desktop returned an invalid message")
         if value.get("type") == "client-discovery-request":
             self._write({"type": "client-discovery-response", "requestId": value["requestId"],
                          "response": {"canHandle": False}})
@@ -158,7 +156,10 @@ class DesktopIPC:
         response = self.request("thread-owner-discovery", {
             "conversationId": thread_id, "hostId": "local",
         })
-        return response["handledByClientId"]
+        owner_id = response.get("handledByClientId")
+        if not isinstance(owner_id, str) or not owner_id or owner_id == self.client_id:
+            raise ValueError("Codex did not identify the owner of this conversation")
+        return owner_id
 
     def state(self, thread_id, owner_id=None):
         owner_id = owner_id or self.owner(thread_id)

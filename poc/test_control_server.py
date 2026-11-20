@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 from app_server_rpc import AppServerRPC
 from control_server import Conflict, Controller, ControlServer, Journal, desktop_model_settings
 from desktop_ipc import DesktopError, DesktopIPC, MAX_FRAME_BYTES
-from goal_transport import GoalUnavailable, goal_revision
+from goal_transport import GoalOwnerClient, GoalUnavailable, goal_revision
 
 
 THREAD = "11111111-1111-4111-8111-111111111111"
@@ -92,7 +92,8 @@ class WriteSafetyTests(unittest.TestCase):
                 return {"result": {"result": {"turnId": "existing-turn"}}, "handledByClientId": "original-owner"}
 
         self.rpc = FakeRPC()
-        self.controller = Controller([THREAD], [self.root], [self.root], self.root / "state", self.rpc, Desktop)
+        self.controller = Controller([THREAD], [self.root], [self.root], self.root / "state", self.rpc, Desktop,
+                                     desktop_channel=GoalOwnerClient(self.root / 'channel'))
         self.controller.history = lambda tid: FakeHistory(self.controller.allowed(tid))
         self.token = secrets.token_urlsafe(32)
         self.server = ControlServer(0, self.controller, self.token)
@@ -130,6 +131,15 @@ class WriteSafetyTests(unittest.TestCase):
         _, result = self.request("GET", "/api/capabilities")
         self.assertEqual(result["workspaces"], [str(self.root.resolve())])
         self.assertIn("existing-thread-write", result["features"])
+
+    def test_new_version_with_live_desktop_keeps_write_features(self):
+        with patch('control_server.find_codex_installation', return_value=(None, {'CFBundleShortVersionString': 'future.version'}, None)):
+            _, payload = self.request('GET', '/api/providers')
+        codex = payload['providers'][0]
+        self.assertEqual(codex['version'], 'future.version')
+        self.assertTrue(codex['connected'])
+        self.assertIn('send', codex['features'])
+        self.assertIn('queue-send', codex['features'])
 
     def test_agent_heartbeat_does_not_read_projects_or_history(self):
         def forbidden():
@@ -319,25 +329,18 @@ class TransportSafetyTests(unittest.TestCase):
             left.close()
             right.close()
 
-    def test_unknown_desktop_version_keeps_reads_but_blocks_writes(self):
-        directory = tempfile.TemporaryDirectory(prefix='arm-', dir='/tmp')
-        socket_path = Path(directory.name) / 'ipc.sock'
-        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        listener.bind(str(socket_path)); socket_path.chmod(0o600); listener.listen(2)
-        try:
-            with patch('desktop_ipc.Path.read_bytes', return_value=b'ignored'), patch('desktop_ipc.plistlib.loads', return_value={'CFBundleShortVersionString': 'future.version'}):
-                read = DesktopIPC(read_only=True)
-                read.socket_path = socket_path
-                with patch.object(read, 'request', return_value={'result': {'clientId': 'readonly-probe'}}):
-                    with read:
-                        self.assertEqual(read.client_id, 'readonly-probe')
-                write = DesktopIPC()
-                write.socket_path = socket_path
-                with self.assertRaisesRegex(RuntimeError, 'needs validation'):
-                    write.__enter__()
-        finally:
-            listener.close()
-            directory.cleanup()
+    def test_live_socket_handshake_controls_compatibility(self):
+        with tempfile.TemporaryDirectory(prefix='arm-', dir='/tmp') as directory, socket.socket(socket.AF_UNIX) as listener:
+            socket_path = Path(directory) / 'ipc.sock'
+            listener.bind(str(socket_path)); socket_path.chmod(0o600); listener.listen(2)
+            client = DesktopIPC(socket_path)
+            with patch.object(client, 'request', return_value={'result': {'clientId': 'compatible-client'}}):
+                with client:
+                    self.assertEqual(client.client_id, 'compatible-client')
+            with patch.object(client, 'request', return_value={'result': {'clientId': None}}):
+                with self.assertRaisesRegex(ValueError, 'unsupported handshake'):
+                    client.__enter__()
+            self.assertIsNone(client.socket)
 
     def test_readonly_connection_cannot_dispatch_instructions(self):
         reader = DesktopIPC(socket_path='/unused', read_only=True)

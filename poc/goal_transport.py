@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in Goal RPC access to the desktop's original stdio app-server.
+"""Opt-in access to conversations in the desktop's original stdio app-server.
 
 Launched only via Codex's CODEX_CLI_PATH override. Native initialization, all
 notifications and approvals pass through unchanged. This never resumes a chat,
@@ -11,7 +11,6 @@ import hmac
 import json
 import os
 from pathlib import Path
-import plistlib
 import secrets
 import signal
 import socket
@@ -23,10 +22,11 @@ import time
 import uuid
 
 GOAL_METHODS = {'thread/goal/get', 'thread/goal/set', 'thread/goal/clear'}
+DESKTOP_METHODS = {'desktop/read', 'desktop/send'}
 STATUSES = {'active', 'paused', 'blocked', 'usageLimited', 'budgetLimited', 'complete'}
-TESTED_GOAL_VERSIONS = {'26.1111.21308'}
 MAX_PACKET = 256 * 1024
 DEFAULT_DIRECTORY = Path.home() / '.airemote/goal-channel'
+OPEN_CHAT = '请在 Mac 的 AIRemote 中通过连接通道启动 Codex，再打开这个对话。'
 
 
 class GoalUnavailable(RuntimeError):
@@ -71,12 +71,16 @@ def checked_goal(goal, thread_id):
                                          'tokensUsed', 'timeUsedSeconds', 'createdAt', 'updatedAt')}
 
 
+def checked_thread_id(value):
+    if not isinstance(value, str) or str(uuid.UUID(value)) != value:
+        raise ValueError('Invalid thread ID')
+    return value
+
+
 def validate_goal_rpc(method, params):
     if method not in GOAL_METHODS or not isinstance(params, dict):
         raise ValueError('Only explicit goal operations are supported')
-    tid = params.get('threadId')
-    if not isinstance(tid, str) or str(uuid.UUID(tid)) != tid:
-        raise ValueError('Invalid thread ID')
+    tid = checked_thread_id(params.get('threadId'))
     allowed = {'threadId'} if method.endswith('/get') else {'threadId', 'origin'}
     if method.endswith('/set'):
         allowed |= {'objective', 'status', 'tokenBudget'}
@@ -143,7 +147,7 @@ class GoalOwnerClient:
         with socket.socket(socket.AF_UNIX) as connection:
             connection.settimeout(timeout)
             connection.connect(str(path))
-            connection.sendall(json.dumps({'token': token, 'method': method, 'params': params}).encode() + b'\n')
+            connection.sendall(json.dumps({'token': token, 'method': method, 'params': params}, ensure_ascii=False).encode() + b'\n')
             with connection.makefile('rb') as stream:
                 response = receive_packet(stream)
         if 'error' in response:
@@ -153,26 +157,68 @@ class GoalOwnerClient:
             if error.get('code') in {'not_ready', 'not_loaded'}:
                 raise GoalUnavailable(error['message'])
             raise GoalRPCError(error.get('message', 'Goal request rejected'))
-        return response['result']
+        result = response.get('result')
+        if not isinstance(result, dict):
+            raise ConnectionError('Codex channel returned an unrecognized response')
+        return result
 
-    def owner(self, thread_id):
+    def connected(self):
+        try:
+            records = self._records()
+        except (GoalUnavailable, OSError, ValueError, KeyError):
+            return False
+        for record in records:
+            try:
+                if self._call(record, 'status', {}, timeout=1).get('conversationControl') is True:
+                    return True
+            except (RuntimeError, OSError, ValueError, KeyError):
+                continue
+        return False
+
+    def find_owner(self, thread_id, *, conversation=False):
+        checked_thread_id(thread_id)
+        try:
+            records = self._records()
+        except GoalUnavailable:
+            return None, False
+        except (OSError, ValueError, KeyError):
+            if conversation:
+                return None, False
+            raise
         owners = []
-        for record in self._records():
+        checked = False
+        for record in records:
             try:
                 value = self._call(record, 'owner', {'threadId': thread_id}, timeout=4)
-                if value.get('loaded'):
+                if conversation and value.get('conversationControl') is not True:
+                    continue
+                if type(value.get('loaded')) is not bool:
+                    continue
+                checked = True
+                if value['loaded']:
                     owners.append(record)
             except (OSError, ValueError, KeyError, GoalUnavailable, GoalRPCError):
                 continue
         if len(owners) > 1:
             raise GoalUnavailable('检测到多个对话持有者，请在 Mac 上确认当前对话。')
-        if not owners:
-            raise GoalUnavailable('目标通道尚未连接此对话。请通过 Mac AIRemote 启动 Codex，并打开这个已有对话。')
-        return owners[0]
+        return (owners[0] if owners else None), checked
+
+    def owner(self, thread_id):
+        owner, _ = self.find_owner(thread_id)
+        if owner is None:
+            raise GoalUnavailable(OPEN_CHAT)
+        return owner
 
     def request(self, method, params, owner=None):
         tid = validate_goal_rpc(method, params)
         return self._call(owner or self.owner(tid), method, params)
+
+    def conversation(self, thread_id, owner):
+        return self._call(owner, 'desktop/read', {'threadId': thread_id})
+
+    def send(self, thread_id, text, message_id, owner):
+        return self._call(owner, 'desktop/send', {'threadId': thread_id, 'text': text,
+                                                 'clientUserMessageId': message_id}, timeout=30)
 
 
 class StdioGoalProxy:
@@ -256,7 +302,8 @@ class StdioGoalProxy:
                                 slot['response'] = value
                                 slot['event'].set()
                         continue
-                    if self.native_initialize_id is not None and request_id == self.native_initialize_id and 'result' in value:
+                    if (self.native_initialize_id is not None and request_id == self.native_initialize_id
+                            and 'error' not in value and isinstance(value.get('result'), dict)):
                         self.native_initialize_ok = True
                 self.output.write(line)
                 self.output.flush()
@@ -271,9 +318,69 @@ class StdioGoalProxy:
                 for slot in self.pending.values():
                     slot['event'].set()
 
+    def loaded_threads(self, timeout=10):
+        params, cursors = {}, set()
+        while True:
+            page = self.rpc('thread/loaded/list', params, timeout=timeout)
+            ids = page.get('data') if isinstance(page, dict) else None
+            if not isinstance(ids, list) or any(not isinstance(tid, str) for tid in ids):
+                raise GoalUnavailable('Codex 返回了不兼容的已打开对话列表。')
+            yield from ids
+            cursor = page.get('nextCursor')
+            if cursor is None:
+                return
+            if not isinstance(cursor, str) or cursor in cursors:
+                raise GoalUnavailable('Codex 返回了无效的已打开对话分页。')
+            cursors.add(cursor)
+            params = {'cursor': cursor}
+
+    def read_conversation(self, tid):
+        result = self.rpc('thread/read', {'threadId': tid, 'includeTurns': False})
+        thread = result.get('thread') if isinstance(result, dict) else None
+        if not isinstance(thread, dict) or thread.get('id') != tid or not isinstance(thread.get('status'), dict):
+            raise GoalUnavailable('Codex 未能确认当前对话的状态。')
+        return {key: thread.get(key) for key in ('id', 'status', 'model', 'reasoningEffort', 'canAcceptDirectInput')}
+
+    def desktop_call(self, method, params):
+        fields = {'threadId'} if method == 'desktop/read' else {'threadId', 'text', 'clientUserMessageId'}
+        if not isinstance(params, dict) or set(params) != fields:
+            raise ValueError('Invalid desktop conversation request')
+        tid = checked_thread_id(params['threadId'])
+        if tid not in self.loaded_threads():
+            raise GoalUnavailable(OPEN_CHAT)
+        thread = self.read_conversation(tid)
+        if method == 'desktop/read':
+            return thread
+        text = params['text']
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError('Message text must not be empty')
+        if thread.get('canAcceptDirectInput') is False:
+            raise GoalUnavailable('当前 Codex 对话不接受直接输入。')
+        request = {'threadId': tid, 'clientUserMessageId': checked_thread_id(params['clientUserMessageId']),
+                   'input': [{'type': 'text', 'text': text, 'text_elements': []}]}
+        status = thread['status'].get('type')
+        if status == 'idle':
+            result = self.rpc('turn/start', {**request, 'turnTrigger': 'user_message'})
+            turn = result.get('turn') if isinstance(result, dict) else None
+            confirmed = turn.get('id') if isinstance(turn, dict) else None
+        elif status == 'active':
+            turns = self.rpc('thread/turns/list', {'threadId': tid, 'limit': 1}).get('data')
+            turn_id = turns[0].get('id') if isinstance(turns, list) and turns and isinstance(turns[0], dict) else None
+            if not isinstance(turn_id, str) or not turn_id:
+                raise GoalUnavailable('Codex 未能确认当前运行的轮次，请刷新对话后重试。')
+            result = self.rpc('turn/steer', {**request, 'expectedTurnId': turn_id})
+            confirmed = result.get('turnId') if isinstance(result, dict) else None
+            if confirmed != turn_id:
+                raise ConnectionError('Codex returned an unexpected turn acknowledgement')
+        else:
+            raise GoalUnavailable('Codex 未能确认可发送指令的轮次，请刷新对话后重试。')
+        if not isinstance(confirmed, str) or not confirmed:
+            raise ConnectionError('Codex returned an unrecognized turn acknowledgement')
+        return {'turnId': confirmed}
+
     def handle(self, connection):
         try:
-            connection.settimeout(15)
+            connection.settimeout(30)
             with connection, connection.makefile('rwb') as stream:
                 try:
                     packet = receive_packet(stream)
@@ -282,23 +389,29 @@ class StdioGoalProxy:
                     if set(packet) != {'token', 'method', 'params'}:
                         raise ValueError('Invalid goal channel request')
                     method, params = packet['method'], packet['params']
+                    ready = self.ready.is_set() and not self.closed.is_set()
                     if method == 'status' and params == {}:
-                        stream.write(json.dumps({'result': {'ready': self.ready.is_set() and not self.closed.is_set()}}).encode() + b'\n')
-                        stream.flush()
-                        return
-                    if method == 'owner':
-                        tid = validate_goal_rpc('thread/goal/get', params)
-                    else:
-                        tid = validate_goal_rpc(method, params)
-                    if not self.ready.is_set() or self.closed.is_set():
+                        if ready:
+                            next(self.loaded_threads(timeout=.7), None)
+                        result = {'ready': ready, 'conversationControl': ready}
+                    elif not ready:
                         raise GoalUnavailable('Original desktop initialization is not ready')
-                    loaded = self.rpc('thread/loaded/list', {}).get('data', [])
-                    if method == 'owner':
-                        result = {'loaded': tid in loaded, 'transport': 'original-desktop-stdio'}
-                    elif tid not in loaded:
-                        raise GoalUnavailable('Open this existing chat in the original Codex desktop first')
+                    elif method in DESKTOP_METHODS:
+                        result = self.desktop_call(method, params)
                     else:
-                        result = self.rpc(method, params)
+                        tid = validate_goal_rpc('thread/goal/get' if method == 'owner' else method, params)
+                        loaded = tid in self.loaded_threads()
+                        if method == 'owner':
+                            result = {'loaded': loaded, 'conversationControl': True, 'transport': 'original-desktop-stdio'}
+                        elif not loaded:
+                            raise GoalUnavailable(OPEN_CHAT)
+                        else:
+                            if method != 'thread/goal/get':
+                                current = self.rpc('thread/goal/get', {'threadId': tid})
+                                if not isinstance(current, dict):
+                                    raise GoalUnavailable('Codex 返回了不兼容的目标状态。')
+                                checked_goal(current.get('goal'), tid)
+                            result = self.rpc(method, params)
                     response = {'result': result}
                 except Exception as error:
                     code = 'outcome_unknown' if isinstance(error, (TimeoutError, ConnectionError)) else 'not_loaded' if isinstance(error, GoalUnavailable) else 'rejected'
@@ -357,12 +470,12 @@ def serve_stdio(args):
     command = [config['executable']] + args.arguments
     # CLI version checks and schema/daemon tooling retain their normal behavior.
     actual_server = 'app-server' in args.arguments and not any(arg in args.arguments for arg in
-        ('--help', '-h', 'generate-json-schema', 'generate-ts', 'daemon', 'proxy'))
-    try:
-        version = plistlib.loads(Path(config['bundleInfo']).read_bytes()).get('CFBundleShortVersionString')
-        actual_server = actual_server and version in TESTED_GOAL_VERSIONS and version == config['codexVersion']
-    except (OSError, ValueError, KeyError):
-        actual_server = False
+        ('--help', '-h', '--print-startup-config', 'help', 'generate-json-schema', 'generate-ts', 'daemon', 'proxy'))
+    for index, arg in enumerate(args.arguments):
+        if arg == '--listen' and args.arguments[index + 1:index + 2] != ['stdio://']:
+            actual_server = False
+        elif arg.startswith('--listen=') and arg != '--listen=stdio://':
+            actual_server = False
     if not actual_server:
         os.execv(command[0], command)
     return StdioGoalProxy(command, config_path.parent, config['token']).run()
