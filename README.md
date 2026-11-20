@@ -86,7 +86,7 @@ python3 deploy/configure_mac.py \
 
 默认配置位于 `~/Library/Application Support/AIRemote/.local/`。可重复 `--workspace` 授权多个目录，`--home` 指定配置位置。默认接入原生项目目录；文件下载仍限制在授权目录内，并且必须有 AI 回复中的明确关联。
 
-从 Releases 下载 Mac 应用，放入“应用程序”后打开；自定义配置位置可在应用中选择。源码启动可使用 `deploy/start_mac.py --config <mac-runtime.json>`。`--status` 只读，`--stop` 停止，`--restart` 重启；日志在配置旁的 `logs/`。关闭应用窗口后后台服务继续运行。
+从 Releases 下载 Mac 应用，放入“应用程序”后打开；自定义配置位置可在应用中选择。源码启动可使用 `deploy/start_mac.py --config <mac-runtime.json>`。`--status` 只读，`--stop` 停止，`--restart` 重启；日志在配置旁的 `logs/`。关闭窗口后，AIRemote 收到顶部菜单栏，后台服务继续运行。点击菜单栏的 AIRemote 图标，选择「打开 AIRemote」即可回到窗口。
 
 Mac 安装包同时支持 Apple Silicon / Intel、macOS 13+，携带连接器代码，升级无需重新下载源码。开启自动检查后，应用每次启动都会检查 GitHub 稳定版，发现新版时弹出“更新并重启”和“稍后”选项。运行期间每六小时检查一次，也可以点“检查更新”。检查、下载、校验、解压和安装分别显示阶段，下载时展示百分比、已下载字节和速率。更新会保留配置、校验下载和代码签名，并在连接器启动失败时回退。安装包当前使用 ad-hoc 签名，尚未 Apple 公证；后续可在发布工作流中接入自己的 Developer ID。
 

@@ -57,6 +57,9 @@ struct GoalChannelStatus: Decodable {
     private var checking = false
     private var launched = false
     private var configurationBlocked = false
+    private var refreshTimer: Timer?
+
+    deinit { refreshTimer?.invalidate() }
 
     var project: URL {
         let saved = UserDefaults.standard.string(forKey: "ProjectDirectory")
@@ -73,6 +76,11 @@ struct GoalChannelStatus: Decodable {
         launched = true
         if autoCheck { checkUpdates(manual: false, announce: true) }
         run(action: nil)
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        refreshTimer = timer
     }
 
     func refresh() {
@@ -309,7 +317,6 @@ struct GoalChannelStatus: Decodable {
 struct ControlView: View {
     @ObservedObject var model: ServiceModel
     @State private var pairing = false
-    let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -388,7 +395,7 @@ struct ControlView: View {
                     .frame(maxHeight: 110)
             }
             HStack(alignment: .top) {
-                Text("关闭窗口后服务继续运行。\n需要停止时，点击“停止服务”。").font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+                Text("关闭窗口会收至菜单栏，服务继续运行。\n需要停止时，点击“停止服务”。").font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4).fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 Button("配置文件夹…") { model.chooseProject() }
                     .controlSize(.small).help(model.project.path).disabled(model.busy || model.updating)
@@ -406,7 +413,6 @@ struct ControlView: View {
             Text("当前版本 \(model.version)，可更新到 \(update.latestVersion)。")
         }
         .onAppear { model.launch() }
-        .onReceive(timer) { _ in model.refresh() }
     }
 }
 
@@ -455,11 +461,84 @@ struct PairMacView: View {
     }
 }
 
+private let controlWindowID = "control"
+
+private struct ControlWindowDockVisibility: NSViewRepresentable {
+    func makeNSView(context: Context) -> Observer { Observer() }
+    func updateNSView(_ nsView: Observer, context: Context) {}
+
+    final class Observer: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            let notifications = NotificationCenter.default
+            notifications.removeObserver(self, name: NSWindow.willCloseNotification, object: nil)
+            guard let window else { return }
+            NSApp.setActivationPolicy(.regular)
+            notifications.addObserver(self, selector: #selector(windowWillClose),
+                                      name: NSWindow.willCloseNotification, object: window)
+        }
+
+        @objc private func windowWillClose() {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+}
+
+private struct MenuBarActions: View {
+    @ObservedObject var model: ServiceModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("打开 AIRemote") {
+            NSApp.setActivationPolicy(.regular)
+            openWindow(id: controlWindowID)
+            if #available(macOS 14.0, *) { NSApp.activate() }
+            else { NSApp.activate(ignoringOtherApps: true) }
+        }
+        Text(model.message)
+        Divider()
+        Button("退出 AIRemote") { NSApp.terminate(nil) }
+    }
+}
+
 @main struct AIRemoteApplication: App {
     @StateObject private var model = ServiceModel()
+
+    private static let menuBarIcon: NSImage = {
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { _ in
+            NSColor.black.setStroke()
+            NSColor.black.setFill()
+            let mark = NSBezierPath()
+            mark.lineWidth = 1.8
+            mark.lineCapStyle = .round
+            mark.lineJoinStyle = .round
+            mark.move(to: NSPoint(x: 2.5, y: 14))
+            mark.line(to: NSPoint(x: 7.5, y: 5.7))
+            mark.curve(to: NSPoint(x: 10.5, y: 5.7), controlPoint1: NSPoint(x: 8.2, y: 4.5), controlPoint2: NSPoint(x: 9.8, y: 4.5))
+            mark.line(to: NSPoint(x: 15.5, y: 14))
+            mark.move(to: NSPoint(x: 5.2, y: 10))
+            mark.line(to: NSPoint(x: 12.8, y: 10))
+            mark.stroke()
+            NSBezierPath(ovalIn: NSRect(x: 13.1, y: 2, width: 3, height: 3)).fill()
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }()
+
     var body: some Scene {
-        WindowGroup("AIRemote") { ControlView(model: model) }
-            .windowResizability(.contentSize)
-            .commands { CommandGroup(replacing: .newItem) {} }
+        Window("AIRemote", id: controlWindowID) {
+            ControlView(model: model)
+                .background(ControlWindowDockVisibility())
+        }
+        .windowResizability(.contentSize)
+        .commands { CommandGroup(replacing: .newItem) {} }
+
+        MenuBarExtra {
+            MenuBarActions(model: model)
+        } label: {
+            Image(nsImage: Self.menuBarIcon).accessibilityLabel("AIRemote")
+        }
+        .menuBarExtraStyle(.menu)
     }
 }
