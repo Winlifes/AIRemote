@@ -148,7 +148,7 @@ jobs:
           - Windows：解压 AIRemote-windows.zip，安装 Python 3.11+（含 Launcher 和 Tcl/Tk），双击 AIRemote.cmd。当前支持配对、读取授权项目中的 Codex 会话和下载关联文件。
           - Mac 启动时自动使用保存的配置目录。配置缺失或权限受限时，窗口显示实际尝试读取的位置，并提供“配置文件夹…”入口。
           - Mac 启动后检查更新，发现新版时弹窗提示。网页、Flutter 和 Mac 管理窗口内置 Claude Desktop 的应用图标。
-          - Claude Code 本地会话：侧栏切换，查看消息、真实运行状态、关联文件及历史。配置 CLI API 凭据后，可继续已关闭的同一会话或新建。
+          - Claude Code 本地会话：配置 CLI API 凭据后，可续聊原会话或新建。由 AIRemote 执行的会话支持待执行队列、停止、下一轮模型与计划模式设置，以及读取和控制原生 `/goal`。已打开的桌面会话提供只读查看。
           - Android：Flutter 跨平台客户端，界面直接由 Flutter 渲染，已移除 WebView 页面。保留原包名和长期签名，可覆盖升级（Android 8+）；首次填写自己的 HTTPS 中继地址。iOS 工程使用同一套 Dart 界面，已加入模拟器构建验证。
           - Mac：解压 AIRemote-macos.zip，将应用放入 /Applications 或 ~/Applications。Intel / Apple Silicon 通用；支持 GitHub 更新并保留私有配置。此构建采用 ad-hoc 签名，尚未经过 Apple 公证。
           - 自托管服务端：AIRemote-server.tar.gz，包含构建好的网页。可选启用六小时稳定版自动更新，健康检查失败会回退。

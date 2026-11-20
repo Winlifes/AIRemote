@@ -56,6 +56,7 @@ void main() {
           return {
             'operationId': 'native-claude-operation',
             'requestStatus': 'in_flight',
+            'kind': 'send',
             'result': {'threadId': 'a', 'executionState': 'starting'},
           };
         }
@@ -78,6 +79,72 @@ void main() {
       final writes = api.calls.where((call) => call.method == 'POST');
       expect(writes.single.path, '$root/threads/a/messages');
       expect(api.calls.where((call) => call.path.endsWith('/queue')), isEmpty);
+    },
+  );
+  test(
+    'Claude can queue during an owned turn and sends settings and stop to that session',
+    () async {
+      final state = demoWorkspace()..provider = 'claude';
+      addTearDown(state.dispose);
+      const root = '/api/providers/claude/threads/a';
+      state.providersById['claude'] = {
+        'readable': true,
+        'connected': true,
+        'features': ['queue', 'send', 'stop'],
+      };
+      final active = {
+        ...thread('a'),
+        'writeAvailable': false,
+        'queueAvailable': true,
+        'executionId': 'owned-run',
+        'stopAvailable': true,
+        'claudeSettings': {'writable': true},
+      };
+      state.threads['a'] = active;
+      final api = state.api as FakeApi;
+      api.respond = (call) {
+        if (call.path == root) return active;
+        if (call.path == '$root/queue' && call.method == 'POST' ||
+            call.path.endsWith('/operations/pending-claude')) {
+          return {
+            'operationId': 'pending-claude',
+            'kind': 'queue_add',
+            'requestStatus': 'queued',
+            'result': {'threadId': 'a'},
+          };
+        }
+        if (call.path == '$root/stop') {
+          return {'kind': 'stop', 'requestStatus': 'applied'};
+        }
+        if (call.path == '$root/settings') {
+          return {'kind': 'settings', 'requestStatus': 'applied'};
+        }
+        return FakeApi.defaultResponse(call);
+      };
+      expect(state.canWrite, isFalse);
+      expect(state.effectiveSendMode, 'queue');
+      state.setDraft('下一条指令');
+      expect(await state.send(), isTrue);
+      expect(state.receipt['requestStatus'], 'queued');
+      expect(
+        await state.saveClaudeSettings({
+          'model': 'haiku',
+          'effort': 'low',
+          'mode': 'plan',
+        }),
+        isTrue,
+      );
+      await state.stopClaude();
+      final mutations = api.calls
+          .where((call) => call.method != 'GET')
+          .toList();
+      expect(mutations.map((call) => call.path), [
+        '$root/queue',
+        '$root/settings',
+        '$root/stop',
+      ]);
+      expect(mutations.last.body['executionId'], 'owned-run');
+      expect(state.receipt['operationId'], 'pending-claude');
     },
   );
   test(

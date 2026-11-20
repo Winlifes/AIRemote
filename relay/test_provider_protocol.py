@@ -35,10 +35,21 @@ class ProviderProtocolTests(unittest.TestCase):
             ('GET', f'{root}/operations/{tid}'),
             ('POST', f'{root}/threads'),
             ('POST', f'{thread}/messages'),
+            ('GET', f'{thread}/queue'),
+            ('POST', f'{thread}/queue'),
+            ('PATCH', f'{thread}/queue/{tid}'),
+            ('DELETE', f'{thread}/queue/{tid}'),
+            ('POST', f'{thread}/queue/{tid}/send'),
+            ('PUT', f'{thread}/queue/order'),
+            ('DELETE', f'{thread}/queue'),
+            ('POST', f'{thread}/stop'),
+            ('PATCH', f'{thread}/settings'),
+            *[(method, f'{thread}/goal') for method in ['GET', 'POST', 'PATCH', 'DELETE']],
         ]:
             self.assertEqual(self.request(method, path)['path'], path)
-        for method, path in [('GET', f'{thread}/queue'), ('POST', f'{thread}/goal'),
-                             ('POST', f'{root}/threads/{SESSION}/messages'), ('GET', f'{root}/auth')]:
+        for method, path in [('POST', f'{root}/threads/{SESSION}/messages'), ('GET', f'{root}/auth'),
+                             ('DELETE', f'{thread}/stop'), ('POST', f'{thread}/settings'),
+                             ('GET', f'{thread}/queue/{tid}/send'), ('POST', f'{thread}/goal/arbitrary')]:
             with self.assertRaises(ValueError):
                 self.request(method, path)
 

@@ -24,15 +24,17 @@ def validate_request(value):
     routes = {
         "GET": [r'/api/providers', DS + r'/projects', DS + r'/projects/' + UUID + r'/threads', DS_THREAD, DS_THREAD + r'/(messages|queue|artifacts)', DS_THREAD + r'/artifacts/[0-9a-f]{24}/download', DS + r'/operations/' + UUID,
                 CLAUDE + r'/projects', CLAUDE + r'/projects/' + UUID + r'/threads',
-                CLAUDE_THREAD, CLAUDE_THREAD + r'/(messages|artifacts)', CLAUDE_THREAD + r'/artifacts/[0-9a-f]{24}/download', CLAUDE + r'/operations/' + UUID,
+                CLAUDE_THREAD, CLAUDE_THREAD + r'/(messages|artifacts|queue|goal)', CLAUDE_THREAD + r'/artifacts/[0-9a-f]{24}/download', CLAUDE + r'/operations/' + UUID,
                 r"/api/capabilities", r"/api/projects", r"/api/projects/" + UUID + r"/threads", r"/api/threads", THREAD, THREAD + r"/(messages|queue|artifacts|goal)",
                 THREAD + r"/artifacts/[0-9a-f]{24}/download", r"/api/operations/" + UUID],
         "POST": [DS + r'/threads', DS_THREAD + r'/(messages|queue)', DS_THREAD + r'/queue/(?:msg-)?' + UUID + r'/send',
-                 CLAUDE + r'/threads', CLAUDE_THREAD + r'/messages',
+                 CLAUDE + r'/threads', CLAUDE_THREAD + r'/(messages|queue|stop|goal)', CLAUDE_THREAD + r'/queue/' + UUID + r'/send',
                  r"/api/threads", THREAD + r"/(messages|queue|goal)", THREAD + r"/queue/" + UUID + r"/send"],
-        "PATCH": [DS_THREAD + r'/queue/(?:msg-)?' + UUID, THREAD + r"/queue/" + UUID, THREAD + r'/goal'],
-        "PUT": [THREAD + r"/queue/order"],
-        "DELETE": [DS_THREAD + r'/queue', DS_THREAD + r'/queue/(?:msg-)?' + UUID, THREAD + r"/queue", THREAD + r"/queue/" + UUID, THREAD + r'/goal'],
+        "PATCH": [DS_THREAD + r'/queue/(?:msg-)?' + UUID, CLAUDE_THREAD + r'/(settings|goal)', CLAUDE_THREAD + r'/queue/' + UUID,
+                  THREAD + r"/queue/" + UUID, THREAD + r'/goal'],
+        "PUT": [THREAD + r"/queue/order", CLAUDE_THREAD + r'/queue/order'],
+        "DELETE": [DS_THREAD + r'/queue', DS_THREAD + r'/queue/(?:msg-)?' + UUID, CLAUDE_THREAD + r'/(queue|goal)', CLAUDE_THREAD + r'/queue/' + UUID,
+                   THREAD + r"/queue", THREAD + r"/queue/" + UUID, THREAD + r'/goal'],
     }
     if not any(re.fullmatch(pattern, parsed.path) for pattern in routes.get(method, [])):
         raise ValueError("Connector operation is not allowed")

@@ -100,7 +100,11 @@ DeepSeek 使用 `deploy/install_deepseek.py` 注册本机 companion，仅将当�
 
 续聊和新建需要 Mac 上的官方 Claude Code CLI，可使用独立安装或 Claude Desktop 自带的版本。给 CLI 配置自己的 API 凭据，例如从已设置 `ANTHROPIC_API_KEY` 的本机终端启动连接器。桌面仍打开同一会话时可查看消息和状态；关闭会话后，可从手机在已授权的工作目录中按原会话 ID 继续。新建会话需填写第一条指令。回执确认真实写入的消息和回复后才显示完成。
 
-本版覆盖 Claude Code 本地会话。Claude Chat、Cowork、云端会话和原生队列待适配。
+在可续聊的会话中，可使用 AIRemote 队列，编辑、重排或删除待执行指令。当前轮完成后，下一条在同一个本地会话执行。「下一条」将选中指令移到队首。停止当前指令、执行失败或重启连接器后，待执行指令会保留并暂停，直到手动继续。工作设置可选择模型、思考强度和计划模式，从下一条指令生效。需要交互确认的工具权限依照本机授权规则处理，连接器不会代批。
+
+Claude Code CLI 2.1.326 起可在页面上执行并回读 `/goal`，支持设置、暂停、继续、修改和关闭目标。暂停会停止本轮执行并保留目标条件，修改或关闭前请先暂停。Claude Code 在继续目标时重新计算本次运行的用量。
+
+当前适配范围是 Mac 上已授权的 Claude Code 本地会话。由 Claude Desktop 占用的会话可查看，发送和控制由 AIRemote 执行的会话提供。
 
 - [Claude Code Desktop](https://code.claude.com/docs/en/desktop)
 - [Claude Code CLI 认证说明](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)

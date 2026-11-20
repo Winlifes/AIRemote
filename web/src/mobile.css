@@ -15,6 +15,8 @@
 .model-modes{display:flex;align-items:center;gap:10px;flex-shrink:0}
 .model-modes>span{display:inline-flex;gap:4px;align-items:center}
 .model-modes .full-access{color:#986226}
+.model-modes .icon-button{width:32px;height:32px}
+.queue-paused{padding:6px 12px;margin:0;color:#68686f;font-size:12px}
 @media(max-width:700px){
  .app{height:var(--airemote-viewport-height,100dvh);min-height:0;overflow:hidden;background:#fafafa}
  .app>.workspace,.app.has-selection>.workspace{display:flex;width:100%;min-height:0;background:#fafafa}

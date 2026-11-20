@@ -19,6 +19,9 @@ class LocalCLI:
     def write_mode(self):
         return self.mode
 
+    def supports_goals(self):
+        return True
+
 
 class ClaudeAdapterTests(unittest.TestCase):
     def setUp(self):
@@ -34,6 +37,7 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.tid = str(uuid4())
         self.cli = LocalCLI(self.tid)
         journal = Journal(root / 'journal')
+        self.root = root
         self.adapter = ClaudeAdapter(journal, [self.work], [self.work], home=root, cli=self.cli)
         log = root / '.claude/projects/workspace' / (self.tid + '.jsonl')
         log.parent.mkdir(parents=True)
@@ -83,6 +87,51 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual(self.adapter.read_artifact(self.tid, file['id'])[1], b'Published report')
         with self.assertRaises(LookupError):
             self.adapter.read_artifact(self.tid, '0' * 24)
+
+    def test_pending_queue_is_editable_idempotent_and_paused_after_restart(self):
+        def submit(key, kind, **changes):
+            return self.adapter.perform(key, kind, {'threadId': self.tid, **changes})
+        with self.assertRaisesRegex(ClaudeError, '释放 Claude Code'):
+            submit('native-owner', 'queue_add', text='Guard the desktop owner')
+        self.cli.current = {}
+        self.adapter.paused.add(self.tid)
+        first = submit('first-prompt', 'queue_add', text='First')
+        second = submit('second-prompt', 'queue_add', text='Second')
+        self.assertEqual(first['requestStatus'], 'queued')
+        self.assertFalse(first['delivery']['receivedInHistory'])
+        self.assertEqual(first, submit('first-prompt', 'queue_add', text='First'))
+        ids = [second['operationId'], first['operationId']]
+        submit('edit-first', 'queue_update', itemId=ids[1], text='Edited')
+        submit('priority-order', 'queue_reorder', ids=ids)
+        submit('save-options', 'settings', model='haiku', effort='low', mode='plan')
+        self.adapter.close()
+        self.adapter = ClaudeAdapter(Journal(self.root / 'journal'), [self.work], [self.work], home=self.root, cli=self.cli)
+        self.assertEqual([(q['id'], q['input'][0]['text']) for q in self.adapter.queue(self.tid)],
+                         [(ids[0], 'Second'), (ids[1], 'Edited')])
+        self.assertTrue(self.adapter.session(self.tid)['queuePaused'])
+        self.assertEqual(self.adapter.session(self.tid)['claudeSettings']['mode'], 'plan')
+        with self.assertRaises(ClaudeError):
+            submit('stale-clear', 'queue_clear', ids=[ids[0]])
+        submit('clear-queue', 'queue_clear', ids=ids)
+        self.assertEqual(self.adapter.queue(self.tid), [])
+        removed = self.adapter.receipt(self.adapter.journal.get(ids[0]))
+        self.assertEqual(removed['requestStatus'], 'cancelled')
+        self.assertFalse(removed['delivery']['receivedInHistory'])
+
+    def test_transcript_goal_status_and_stop_keep_desktop_read_only(self):
+        path = self.adapter.row(self.tid).log
+        with path.open('ab') as output:
+            output.write(b'\n')
+            value = {'type': 'attachment', 'sessionId': self.tid, 'uuid': str(uuid4()),
+                     'attachment': {'type': 'goal_status', 'sentinel': True, 'met': False, 'condition': 'Check the report'}}
+            output.write((json.dumps(value) + '\n').encode())
+        self.assertEqual(self.adapter.goal(self.tid)['goal']['status'], 'active')
+        self.assertFalse(self.adapter.goal(self.tid)['writable'])
+        with self.assertRaisesRegex(ClaudeError, '指令已变化'):
+            self.adapter.perform('stop-native', 'stop', {'threadId': self.tid, 'executionId': str(uuid4())})
+        self.cli.current = {}
+        self.assertEqual(self.adapter.goal(self.tid)['goal']['status'], 'paused')
+        self.assertFalse(self.adapter.session(self.tid)['writeAvailable'])
 
 
 if __name__ == '__main__':

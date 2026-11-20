@@ -16,9 +16,14 @@ export type Thread = {
   writeAvailable?: boolean;
   writeMessage?: string;
   queueAvailable?: boolean;
+  queuePaused?: boolean;
+  stopAvailable?: boolean;
+  executionId?: string | null;
+  claudeSettings?: ClaudeSettings & { writable: boolean };
 };
+export type ClaudeSettings = { model: string; effort: string; mode: string };
 export type Goal = { threadId: string; objective: string; status: 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete'; tokenBudget: number | null; tokensUsed: number; timeUsedSeconds: number; createdAt: number; updatedAt: number };
-export type GoalState = { goal: Goal | null; readable: boolean; writable: boolean; revision: string | null; source: string; message: string };
+export type GoalState = { goal: Goal | null; readable: boolean; writable: boolean; revision: string | null; source: string; message: string; busy?: boolean };
 export function goalPresentation(goal: Goal) {
   const labels: Record<string, string> = { active: '进行中', paused: '已暂停', blocked: '受阻', usageLimited: '用量受限', budgetLimited: '预算已用完', complete: '已完成' };
   const seconds = Math.max(0, Math.floor(goal.timeUsedSeconds || 0));
@@ -33,7 +38,7 @@ export function modelPresentation(settings?: ModelSettings | null) {
   const names: Record<string, string> = { 'gpt-6.1-sol': 'GPT-6.1 Sol', 'gpt-6-astra': 'GPT-6 Astra', 'gpt-6.1-terra': 'GPT-6.1 Terra', 'gpt-6-sol': 'GPT-6 Sol', 'gpt-6-luna': 'GPT-6 Luna' };
   const efforts: Record<string, string> = { minimal: '最低', low: '低', medium: '中', high: '高', xhigh: '最高', max: 'Max', ultra: 'Ultra' };
   const modes: Record<string, string> = { default: '工作', plan: '计划' };
-  const permissions: Record<string, string> = { dangerFullAccess: '完全访问', workspaceWrite: '工作区写入', readOnly: '只读' };
+  const permissions: Record<string, string> = { dangerFullAccess: '完全访问', workspaceWrite: '工作区写入', readOnly: '只读', manual: '本机授权规则', plan: '只读' };
   return {
     model: model ? names[model] || model : '模型设置待同步',
     effort: settings?.reasoningEffort ? efforts[settings.reasoningEffort] || settings.reasoningEffort : null,

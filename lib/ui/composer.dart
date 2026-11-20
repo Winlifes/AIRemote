@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 import '../core/api.dart';
 import '../core/workspace.dart';
+import 'claude_settings.dart';
 import 'app.dart';
 
 class ComposerDock extends StatefulWidget {
@@ -97,12 +98,18 @@ class _ComposerDockState extends State<ComposerDock> {
         ? ((result?['error'])?.toString() ?? '指令未执行')
         : state.receipt['requestStatus'] == 'outcome_unknown'
         ? '执行结果待核对，请先查看当前对话'
+        : state.receipt['requestStatus'] == 'cancelled'
+        ? '已移出待执行队列'
+        : delivery?['turnStatus'] == 'interrupted'
+        ? '本轮已停止'
         : delivery?['turnStatus'] == 'completed'
-        ? '这一轮已完成 · 已核对桌面对话'
+        ? '这一轮已完成 · 已核对原会话'
         : delivery?['receivedInHistory'] == true
         ? '同一对话已收到 · 等待后续回复'
         : result?['deliveryState'] == 'queued'
-        ? '已保存到原生队列 · 等待执行'
+        ? state.provider == 'claude'
+              ? '已加入 AIRemote 队列 · 等待执行'
+              : '已保存到原生队列 · 等待执行'
         : state.provider == 'claude' &&
               state.receipt['requestStatus'] == 'in_flight'
         ? 'Claude Code 正在处理，等待会话回执'
@@ -159,7 +166,8 @@ class _ComposerDockState extends State<ComposerDock> {
                   ),
                 ),
               ),
-            if (state.provider == 'codex')
+            if (state.provider == 'codex' ||
+                state.provider == 'claude' && settings != null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(7, 0, 7, 6),
                 child: Row(
@@ -188,6 +196,23 @@ class _ComposerDockState extends State<ComposerDock> {
                             color: Color(0xffa0763b),
                           ),
                         ),
+                      ),
+                    if (state.provider == 'claude' &&
+                        state.chat?['claudeSettings']?['writable'] == true)
+                      IconButton(
+                        tooltip: 'Claude 工作设置',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: state.busy
+                            ? null
+                            : () => showClaudeSettings(context, state),
+                        icon: const Icon(Icons.tune, size: 17),
+                      ),
+                    if (state.canStopClaude)
+                      IconButton(
+                        tooltip: '停止当前 Claude 指令',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: state.stopClaude,
+                        icon: const Icon(Icons.stop_circle_outlined, size: 20),
                       ),
                   ],
                 ),
@@ -260,7 +285,9 @@ class _ComposerDockState extends State<ComposerDock> {
                     textCapitalization: TextCapitalization.sentences,
                     style: const TextStyle(fontSize: 16, height: 1.6),
                     decoration: InputDecoration(
-                      hintText: state.sendMode == 'queue' ? '写下下一步指令…' : null,
+                      hintText: state.effectiveSendMode == 'queue'
+                          ? '写下下一步指令…'
+                          : null,
                       border: InputBorder.none,
                       enabledBorder: InputBorder.none,
                       focusedBorder: InputBorder.none,
@@ -290,7 +317,7 @@ class _ComposerDockState extends State<ComposerDock> {
                         opacity: progress,
                         child: PopupMenuButton<String>(
                           tooltip: '指令发送方式',
-                          initialValue: state.sendMode,
+                          initialValue: state.effectiveSendMode,
                           onOpened: () => _menu(true),
                           onCanceled: () => _menu(false),
                           onSelected: (value) {
@@ -299,11 +326,21 @@ class _ComposerDockState extends State<ComposerDock> {
                             state.changed();
                             focus.requestFocus();
                           },
-                          itemBuilder: (_) => const [
-                            PopupMenuItem(value: 'send', child: Text('立即发送')),
+                          itemBuilder: (_) => [
+                            PopupMenuItem(
+                              value: 'send',
+                              enabled:
+                                  state.provider != 'claude' ||
+                                  !state.isRunning,
+                              child: const Text('立即发送'),
+                            ),
                             PopupMenuItem(
                               value: 'queue',
-                              child: Text('加入原生队列'),
+                              child: Text(
+                                state.provider == 'claude'
+                                    ? '加入 AIRemote 队列'
+                                    : '加入原生队列',
+                              ),
                             ),
                           ],
                           child: Padding(
@@ -312,7 +349,7 @@ class _ComposerDockState extends State<ComposerDock> {
                               vertical: 12,
                             ),
                             child: Text(
-                              state.sendMode == 'queue'
+                              state.effectiveSendMode == 'queue'
                                   ? '加入队列'
                                   : state.providerName,
                               style: const TextStyle(
@@ -340,8 +377,8 @@ class _ComposerDockState extends State<ComposerDock> {
       disabledBackgroundColor: const Color(0xffe4e4e8),
       fixedSize: const Size(40, 40),
     ),
-    tooltip: state.sendMode == 'queue' ? '加入队列' : '发送指令',
-    onPressed: !state.canWrite || state.draft.trim().isEmpty
+    tooltip: state.effectiveSendMode == 'queue' ? '加入队列' : '发送指令',
+    onPressed: !state.canSendDraft || state.draft.trim().isEmpty
         ? null
         : () async {
             await state.send();
@@ -355,7 +392,9 @@ class _ComposerDockState extends State<ComposerDock> {
             ),
           )
         : Icon(
-            state.sendMode == 'queue' ? Icons.playlist_add : Icons.arrow_upward,
+            state.effectiveSendMode == 'queue'
+                ? Icons.playlist_add
+                : Icons.arrow_upward,
             size: 23,
           ),
   );
@@ -383,21 +422,24 @@ class _ComposerDockState extends State<ComposerDock> {
     },
     itemBuilder: (_) => [
       if (widget.state.supportsQueue)
-        const PopupMenuItem(
+        PopupMenuItem(
           value: 'send',
-          child: ListTile(
+          enabled: widget.state.provider != 'claude' || !widget.state.isRunning,
+          child: const ListTile(
             dense: true,
             leading: Icon(Icons.arrow_upward, size: 20),
             title: Text('立即发送'),
           ),
         ),
       if (widget.state.supportsQueue)
-        const PopupMenuItem(
+        PopupMenuItem(
           value: 'queue',
           child: ListTile(
             dense: true,
-            leading: Icon(Icons.playlist_add, size: 20),
-            title: Text('加入原生队列'),
+            leading: const Icon(Icons.playlist_add, size: 20),
+            title: Text(
+              widget.state.provider == 'claude' ? '加入 AIRemote 队列' : '加入原生队列',
+            ),
           ),
         ),
       if (widget.state.supportsQueue) const PopupMenuDivider(),
@@ -431,6 +473,7 @@ class GoalDock extends StatelessWidget {
     final goal = state.goal!;
     final enabled =
         state.online && state.goalState?['writable'] == true && !state.busy;
+    final editable = enabled && state.goalState?['busy'] != true;
     final status = goal['status'] as String?;
     final label = switch (status) {
       'active' => '进行中',
@@ -556,10 +599,12 @@ class GoalDock extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 3),
-                  if (status != 'complete')
+                  if (status == 'active' ||
+                      status == 'paused' ||
+                      state.provider != 'claude' && status != 'complete')
                     IconButton(
                       tooltip: status == 'active' ? '暂停目标' : '继续目标',
-                      onPressed: enabled
+                      onPressed: enabled && (status == 'active' || editable)
                           ? () => state.goalAction('PATCH', {
                               'status': status == 'active'
                                   ? 'paused'
@@ -601,13 +646,13 @@ class GoalDock extends StatelessWidget {
                       ),
                       PopupMenuItem(
                         value: 'edit',
-                        enabled: enabled,
+                        enabled: editable,
                         child: const Text('修改目标'),
                       ),
                       const PopupMenuDivider(),
                       PopupMenuItem(
                         value: 'close',
-                        enabled: enabled,
+                        enabled: editable,
                         child: const Text(
                           '关闭目标',
                           style: TextStyle(color: Color(0xffac656a)),
@@ -641,6 +686,11 @@ class _QueueDock extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (state.chat?['queuePaused'] == true)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 5),
+              child: Text('队列已暂停，选择一条指令继续。'),
+            ),
           for (var index = 0; index < state.queue.length; index++)
             _row(context, state.queue[index], index),
         ],
@@ -662,9 +712,11 @@ class _QueueDock extends StatelessWidget {
           ),
         ),
         IconButton(
-          tooltip: '立即执行队列指令',
+          tooltip: state.provider == 'claude' && state.isRunning
+              ? '移到下一条执行'
+              : '立即执行队列指令',
           visualDensity: VisualDensity.compact,
-          onPressed: state.canWrite
+          onPressed: state.canManageQueue
               ? () => state.queueAction('send', item: item)
               : null,
           icon: const Icon(Icons.turn_right, size: 20, color: muted),
@@ -672,14 +724,14 @@ class _QueueDock extends StatelessWidget {
         IconButton(
           tooltip: '删除队列指令',
           visualDensity: VisualDensity.compact,
-          onPressed: state.canWrite
+          onPressed: state.canManageQueue
               ? () => state.queueAction('delete', item: item)
               : null,
           icon: const Icon(Icons.delete_outline, size: 18, color: muted),
         ),
         PopupMenuButton<String>(
           tooltip: '队列更多操作',
-          enabled: state.canWrite,
+          enabled: state.canManageQueue,
           icon: const Icon(Icons.more_horiz, size: 20, color: muted),
           onSelected: (action) async {
             if (action == 'edit') {
@@ -849,11 +901,13 @@ class _GoalSheetState extends State<GoalSheet> {
     listenable: widget.state,
     builder: (_, _) {
       final state = widget.state, goal = state.goal;
+      final claude = state.provider == 'claude';
       final enabled =
           state.online &&
           state.goalState?['writable'] == true &&
           !state.busy &&
           !submitting;
+      final editable = enabled && state.goalState?['busy'] != true;
       final stale = editing && revision != state.goalState?['revision'];
       return SafeArea(
         top: false,
@@ -904,22 +958,24 @@ class _GoalSheetState extends State<GoalSheet> {
                   controller: objective,
                   minLines: 3,
                   maxLines: 8,
-                  maxLength: 32000,
-                  decoration: const InputDecoration(
+                  maxLength: claude ? 4000 : 32000,
+                  decoration: InputDecoration(
                     labelText: '目标',
-                    hintText: '告诉 Codex 需要持续完成什么…',
+                    hintText: '告诉 ${state.providerName} 需要持续完成什么…',
                   ),
                 ),
-                const SizedBox(height: 14),
-                TextField(
-                  controller: budget,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Token 预算（可选）',
-                    hintText: '留空使用默认预算',
+                if (!claude) ...[
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: budget,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Token 预算（可选）',
+                      hintText: '留空使用默认预算',
+                    ),
                   ),
-                ),
-                if (goal == null)
+                ],
+                if (goal == null && !claude)
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
                     value: paused,
@@ -941,7 +997,7 @@ class _GoalSheetState extends State<GoalSheet> {
                 Align(
                   alignment: Alignment.centerRight,
                   child: FilledButton(
-                    onPressed: !enabled || stale
+                    onPressed: !editable || stale
                         ? null
                         : () async {
                             final tokens = budget.text.trim().isEmpty
@@ -958,7 +1014,7 @@ class _GoalSheetState extends State<GoalSheet> {
                             final ok = await state
                                 .goalAction(goal == null ? 'POST' : 'PATCH', {
                                   'objective': objective.text.trim(),
-                                  'tokenBudget': tokens,
+                                  if (!claude) 'tokenBudget': tokens,
                                   if (goal == null)
                                     'status': paused ? 'paused' : 'active',
                                 });
@@ -1000,7 +1056,7 @@ class _GoalSheetState extends State<GoalSheet> {
                   runSpacing: 8,
                   children: [
                     OutlinedButton.icon(
-                      onPressed: enabled
+                      onPressed: editable
                           ? () => setState(() {
                               reset();
                               editing = true;
@@ -1009,24 +1065,29 @@ class _GoalSheetState extends State<GoalSheet> {
                       icon: const Icon(Icons.edit_outlined, size: 16),
                       label: const Text('修改目标'),
                     ),
-                    OutlinedButton.icon(
-                      onPressed: enabled
-                          ? () => state.goalAction('PATCH', {
-                              'status': goal['status'] == 'active'
-                                  ? 'paused'
-                                  : 'active',
-                            })
-                          : null,
-                      icon: Icon(
-                        goal['status'] == 'active'
-                            ? Icons.pause
-                            : Icons.play_arrow,
-                        size: 17,
+                    if (!claude ||
+                        ['active', 'paused'].contains(goal['status']))
+                      OutlinedButton.icon(
+                        onPressed:
+                            enabled && (goal['status'] == 'active' || editable)
+                            ? () => state.goalAction('PATCH', {
+                                'status': goal['status'] == 'active'
+                                    ? 'paused'
+                                    : 'active',
+                              })
+                            : null,
+                        icon: Icon(
+                          goal['status'] == 'active'
+                              ? Icons.pause
+                              : Icons.play_arrow,
+                          size: 17,
+                        ),
+                        label: Text(
+                          goal['status'] == 'active' ? '暂停目标' : '继续目标',
+                        ),
                       ),
-                      label: Text(goal['status'] == 'active' ? '暂停目标' : '继续目标'),
-                    ),
                     OutlinedButton(
-                      onPressed: enabled
+                      onPressed: editable
                           ? () async {
                               await confirmCloseGoal(context, state);
                               if (context.mounted && state.goal == null) {
@@ -1039,9 +1100,15 @@ class _GoalSheetState extends State<GoalSheet> {
                   ],
                 ),
                 const SizedBox(height: 15),
-                const Text(
-                  '暂停后不再自动推进目标，正在执行的这一轮仍可能继续。',
-                  style: TextStyle(fontSize: 11, color: muted, height: 1.7),
+                Text(
+                  claude
+                      ? '暂停会停止这轮执行，并保留目标。暂停后可以修改或关闭目标。'
+                      : '暂停后不再自动推进目标，正在执行的这一轮仍可能继续。',
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: muted,
+                    height: 1.7,
+                  ),
                 ),
               ],
             ],

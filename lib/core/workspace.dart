@@ -154,7 +154,23 @@ class Workspace extends ChangeNotifier {
   bool supports(String feature) =>
       (descriptor['features'] as List? ?? []).contains(feature);
   bool get supportsQueue =>
-      provider != 'claude' && chat?['queueAvailable'] != false;
+      chat?['queueAvailable'] != false &&
+      (provider != 'claude' ||
+          supports('queue') && chat?['queueAvailable'] == true);
+  bool get canManageQueue =>
+      provider == 'claude' ? _canOperate && supportsQueue : canWrite;
+  String get effectiveSendMode => !supportsQueue
+      ? 'send'
+      : provider == 'claude' && isRunning
+      ? 'queue'
+      : sendMode;
+  bool get canSendDraft =>
+      effectiveSendMode == 'queue' ? canManageQueue : canWrite;
+  bool get canStopClaude =>
+      _canOperate && provider == 'claude' && chat?['stopAvailable'] == true;
+  bool get canSetGoal =>
+      provider == 'codex' && chat?['writeAvailable'] != false ||
+      provider == 'claude' && (goalState?['writable'] == true || goal != null);
   bool get canWrite =>
       _canOperate &&
       chat?['writeAvailable'] != false &&
@@ -474,7 +490,11 @@ class Workspace extends ChangeNotifier {
           'failed',
           'interrupted',
         ].contains(receipt['delivery']?['turnStatus']) &&
-        !['failed', 'outcome_unknown'].contains(receipt['requestStatus'])) {
+        ![
+          'failed',
+          'outcome_unknown',
+          'cancelled',
+        ].contains(receipt['requestStatus'])) {
       paths['receipt'] = '/api/operations/$operation';
     }
     await Future.wait(
@@ -633,7 +653,17 @@ class Workspace extends ChangeNotifier {
         throw ApiError(value['result']?['error']?.toString() ?? '指令未执行', 409);
       }
       _uncertainWrites.remove(fingerprint);
-      if (scope == _generation) receipt = value;
+      if (scope == _generation &&
+          (chosen != 'claude' ||
+              [
+                'send',
+                'create',
+                'queue_add',
+                'queue_send',
+              ].contains(value['kind']) ||
+              '${value['kind']}'.startsWith('goal_'))) {
+        receipt = value;
+      }
       return value;
     } catch (e) {
       if (e is ApiError && e.status > 0 && e.status < 500 && !e.uncertain) {
@@ -649,11 +679,11 @@ class Workspace extends ChangeNotifier {
 
   Future<bool> send() async {
     final text = draft;
-    if (text.trim().isEmpty || !canWrite) return false;
+    if (text.trim().isEmpty || !canSendDraft) return false;
     final key = draftKey,
         id = selected,
         generation = _generation,
-        mode = supportsQueue ? sendMode : 'send';
+        mode = effectiveSendMode;
     final value = await mutate(
       '/api/threads/$id/${mode == 'queue' ? 'queue' : 'messages'}',
       'POST',
@@ -664,6 +694,8 @@ class Workspace extends ChangeNotifier {
     if (generation == _generation) {
       if (provider != 'claude') {
         notice = mode == 'queue' ? '已加入原生队列' : 'Mac 已受理，正在回读对话';
+      } else {
+        notice = '';
       }
       followLatest = true;
       unawaited(refreshChat());
@@ -694,7 +726,7 @@ class Workspace extends ChangeNotifier {
       unawaited(refreshChat());
       if (value != null) {
         notice = result?['nativeConfirmed'] == true
-            ? 'Codex 已确认目标更新'
+            ? '$providerName 已确认目标更新'
             : '目标已受理，请核对最新状态';
       }
     }
@@ -725,9 +757,38 @@ class Workspace extends ChangeNotifier {
         : 'DELETE';
     final value = await mutate(path, method, {'text': ?text, 'ids': ?ids});
     if (value != null && generation == _generation) {
-      notice = action == 'send' ? 'Mac 已受理，正在核对同一对话' : '队列已更新';
+      notice = action == 'send'
+          ? value['requestStatus'] == 'queued'
+                ? '已移到队首，等待执行'
+                : 'Mac 已受理，正在核对同一对话'
+          : '队列已更新';
       unawaited(refreshChat());
     }
+  }
+
+  Future<void> stopClaude() async {
+    final id = selected, run = chat?['executionId'], generation = _generation;
+    if (!canStopClaude || run is! String) return;
+    final result = await mutate('/api/threads/$id/stop', 'POST', {
+      'executionId': run,
+    });
+    if (result != null && generation == _generation) {
+      notice = '已停止当前指令，队列已暂停';
+      unawaited(refreshChat());
+    }
+  }
+
+  Future<bool> saveClaudeSettings(Json options) async {
+    final id = selected, generation = _generation;
+    if (provider != 'claude' || chat?['claudeSettings']?['writable'] != true) {
+      return false;
+    }
+    final result = await mutate('/api/threads/$id/settings', 'PATCH', options);
+    if (result != null && generation == _generation) {
+      notice = '设定将从下一条 Claude 指令生效';
+      unawaited(refreshChat());
+    }
+    return result != null;
   }
 
   Future<JsonList> files() async {

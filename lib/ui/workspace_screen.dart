@@ -147,10 +147,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
                             showFiles(context, state, widget.native),
                         icon: const Icon(Icons.folder_outlined, size: 21),
                       ),
-                    if (selected &&
-                        state.provider == 'codex' &&
-                        state.chat?['writeAvailable'] != false &&
-                        state.goal == null)
+                    if (selected && state.canSetGoal && state.goal == null)
                       IconButton(
                         tooltip: '对话目标',
                         onPressed: () => showGoal(context, state),

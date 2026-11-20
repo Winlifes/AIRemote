@@ -3,6 +3,7 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager, nullcontext
 from datetime import datetime, timezone
 import hashlib
 import hmac
@@ -76,15 +77,17 @@ class Journal:
             db.execute("UPDATE operations SET status='outcome_unknown' WHERE status='in_flight'")
         self.path.chmod(0o600)
 
+    @contextmanager
     def connect(self):
-        db = sqlite3.connect(self.path, timeout=10)
-        db.row_factory = sqlite3.Row
-        return db
+        with closing(sqlite3.connect(self.path, timeout=10)) as db, db:
+            db.row_factory = sqlite3.Row
+            yield db
 
-    def begin(self, key, kind, payload):
+    def begin(self, key, kind, payload, *, connection=None):
         digest = hashlib.sha256(json.dumps({"kind": kind, "payload": payload}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+        with (self.connect() if connection is None else nullcontext(connection)) as db:
+            if connection is None:
+                db.execute("BEGIN IMMEDIATE")
             old = db.execute("SELECT * FROM operations WHERE request_key=?", (key,)).fetchone()
             if old:
                 if old["digest"] != digest:
@@ -98,8 +101,8 @@ class Journal:
             ))
             return dict(db.execute("SELECT * FROM operations WHERE id=?", (operation_id,)).fetchone()), True
 
-    def finish(self, operation_id, status, result):
-        with self.connect() as db:
+    def finish(self, operation_id, status, result, *, connection=None):
+        with (self.connect() if connection is None else nullcontext(connection)) as db:
             db.execute("UPDATE operations SET status=?,result=?,updated_at=? WHERE id=?", (
                 status, json.dumps(result, ensure_ascii=False), now(), operation_id,
             ))
@@ -548,7 +551,7 @@ class ControlHandler(ProbeHandler):
         match = re.fullmatch(r'/operations/(' + THREAD_PATTERN + ')', path)
         if match:
             return self.respond(200, adapter.receipt(adapter.journal.get(match.group(1))))
-        resources = 'messages|artifacts|queue' if prefix else 'messages|artifacts'
+        resources = 'messages|artifacts|queue' if prefix else 'messages|artifacts|queue|goal'
         match = re.fullmatch(r'/threads/(' + prefix + THREAD_PATTERN + r')(?:/(' + resources + r'))?', path)
         download = re.fullmatch(r'/threads/(' + prefix + THREAD_PATTERN + r')/artifacts/([0-9a-f]{24})/download', path)
         if download:
@@ -565,6 +568,8 @@ class ControlHandler(ProbeHandler):
             return self.respond(200, adapter.message_page(tid, int(query.get('limit', [40])[0]), query.get('before', [None])[0]))
         if resource == 'queue':
             return self.respond(200, {'items': adapter.queue(tid)})
+        if resource == 'goal':
+            return self.respond(200, adapter.goal(tid))
         if resource == 'artifacts':
             return self.respond(200, {'artifacts': adapter.artifacts(tid)})
         return self.respond(200, adapter.session(tid))
@@ -592,6 +597,37 @@ class ControlHandler(ProbeHandler):
         result = self.server.controller.deepseek.perform(self.headers.get('Idempotency-Key'), kind, payload)
         return self.respond(202 if result['requestStatus'] in {'in_flight', 'outcome_unknown'} else 200, result)
 
+    def claude_mutate(self, path, body):
+        if path == '/threads' and self.command == 'POST':
+            kind, payload = 'create', body
+        else:
+            match = re.fullmatch(r'/threads/(' + THREAD_PATTERN + r')/(messages|queue|settings|stop|goal)(?:/(' +
+                                 THREAD_PATTERN + r'|order))?(?:/(send))?', path)
+            if not match:
+                return self.respond(404, {'error': 'Unknown Claude Code write endpoint'})
+            tid, resource, item, priority = match.groups()
+            action = (self.command, resource)
+            commands = {('POST', 'messages'): 'send', ('PATCH', 'settings'): 'settings', ('POST', 'stop'): 'stop',
+                        ('POST', 'goal'): 'goal_set', ('PATCH', 'goal'): 'goal_set', ('DELETE', 'goal'): 'goal_clear',
+                        ('POST', 'queue'): 'queue_add', ('DELETE', 'queue'): 'queue_clear'}
+            payload = dict(body, threadId=tid)
+            if not item:
+                kind = commands.get(action)
+                if action == ('PATCH', 'goal') and 'objective' not in body:
+                    kind = {'paused': 'goal_pause', 'active': 'goal_resume'}.get(body.get('status'))
+            elif resource == 'queue' and item == 'order' and self.command == 'PUT' and not priority:
+                kind = 'queue_reorder'
+            elif resource == 'queue' and item != 'order':
+                kind = {('POST', 'send'): 'queue_send', ('PATCH', None): 'queue_update',
+                        ('DELETE', None): 'queue_delete'}.get((self.command, priority))
+                payload['itemId'] = item
+            else:
+                kind = None
+            if not kind:
+                raise ValueError('Unsupported Claude Code operation')
+        result = self.server.controller.claude.perform(self.headers.get('Idempotency-Key'), kind, payload)
+        return self.respond(202 if result['requestStatus'] in {'queued', 'in_flight', 'outcome_unknown'} else 200, result)
+
     def mutate(self):
         if not self.authorized():
             return
@@ -599,14 +635,7 @@ class ControlHandler(ProbeHandler):
         try:
             body = self.body()
             if path.startswith('/api/providers/claude/'):
-                local = path.removeprefix('/api/providers/claude')
-                tid = re.fullmatch(r'/threads/(' + THREAD_PATTERN + r')/messages', local)
-                if self.command != 'POST' or not (local == '/threads' or tid):
-                    return self.respond(404, {'error': 'Unknown Claude Code write endpoint'})
-                kind = 'send' if tid else 'create'
-                payload = {**body, 'threadId': tid.group(1)} if tid else body
-                result = self.server.controller.claude.perform(self.headers.get('Idempotency-Key'), kind, payload)
-                return self.respond(202 if result['requestStatus'] in {'in_flight', 'outcome_unknown'} else 200, result)
+                return self.claude_mutate(path.removeprefix('/api/providers/claude'), body)
             if path.startswith('/api/providers/deepseek/'):
                 return self.deepseek_mutate(path[len('/api/providers/deepseek'):], body)
             if path == "/api/threads" and self.command == "POST":
