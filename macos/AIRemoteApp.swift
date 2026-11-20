@@ -25,6 +25,11 @@ struct UpdateStatus: Decodable {
     var plan: String?
 }
 
+private struct InstallLaunchStatus: Decodable {
+    var installerStarted: Bool?
+    var deferred: Bool?
+}
+
 struct GoalChannelStatus: Decodable {
     var configured = false
     var connected = false
@@ -47,17 +52,33 @@ struct GoalChannelStatus: Decodable {
     @Published var update: UpdateStatus?
     @Published var announceUpdate = false
     @Published var updating = false
+    @Published private(set) var installingUpdate = false
     @Published var updateMessage = ""
     @Published var updateProgress: UpdateProgress?
     @Published var goalChannel = GoalChannelStatus()
     @Published var goalMessage = ""
     @Published var autoCheck = UserDefaults.standard.object(forKey: "AutoCheckUpdates") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(autoCheck, forKey: "AutoCheckUpdates") }
+        didSet {
+            UserDefaults.standard.set(autoCheck, forKey: "AutoCheckUpdates")
+            if autoCheck && autoInstall { scheduleUpdate(update) }
+        }
+    }
+    @Published var autoInstall = UserDefaults.standard.bool(forKey: "AutoInstallUpdates") {
+        didSet {
+            UserDefaults.standard.set(autoInstall, forKey: "AutoInstallUpdates")
+            if autoInstall {
+                announceUpdate = false
+                scheduleUpdate(update)
+            }
+        }
     }
     private var checking = false
     private var launched = false
     private var configurationBlocked = false
     private var refreshTimer: Timer?
+    private var pendingUpdate: String?
+    private var preparedUpdate: (version: String, config: URL, plan: String)?
+    private var retryUpdateAfter = Date.distantPast
 
     deinit { refreshTimer?.invalidate() }
 
@@ -75,7 +96,8 @@ struct GoalChannelStatus: Decodable {
         guard !launched else { return }
         launched = true
         if autoCheck { checkUpdates(manual: false, announce: true) }
-        run(action: nil)
+        if ProcessInfo.processInfo.arguments.contains("--keep-services-stopped") { refresh() }
+        else { run(action: nil) }
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
@@ -85,6 +107,7 @@ struct GoalChannelStatus: Decodable {
 
     func refresh() {
         checkIfDue()
+        tryScheduledUpdate()
         guard !busy && !checking && !configurationBlocked else { return }
         checking = true
         let directory = project
@@ -107,7 +130,7 @@ struct GoalChannelStatus: Decodable {
     }
 
     func run(action: String?) {
-        guard !busy else { return }
+        guard !busy && !installingUpdate else { return }
         configurationBlocked = false
         busy = true; error = nil
         message = action == "--stop" ? "正在停止服务…" : "正在启动服务…"
@@ -201,7 +224,7 @@ struct GoalChannelStatus: Decodable {
     }
 
     func launchGoalChannel() {
-        guard !busy else { return }
+        guard !busy && !installingUpdate else { return }
         busy = true; error = nil
         goalMessage = "正在准备目标控制通道…"
         Task {
@@ -220,6 +243,22 @@ struct GoalChannelStatus: Decodable {
         if autoCheck && Date().timeIntervalSince1970 - checked > 6 * 3600 { checkUpdates(manual: false) }
     }
 
+    private func scheduleUpdate(_ value: UpdateStatus?) {
+        let next = value?.available == true ? value?.latestVersion : nil
+        if next != pendingUpdate { retryUpdateAfter = .distantPast }
+        pendingUpdate = next
+    }
+
+    private func tryScheduledUpdate() {
+        guard autoCheck && autoInstall && !busy && !updating && !configurationBlocked,
+              NSApp.modalWindow == nil, !NSApp.windows.contains(where: { $0.attachedSheet != nil }),
+              let pendingUpdate, Date() >= retryUpdateAfter else { return }
+        let last = UserDefaults.standard.dictionary(forKey: "LastAutoInstallAttempt")
+        if last?["version"] as? String == pendingUpdate, let time = last?["time"] as? Double,
+           Date().timeIntervalSince1970 - time < 6 * 3600 { return }
+        installUpdate(automatic: true)
+    }
+
     func checkUpdates(manual: Bool = true, announce: Bool = false) {
         guard !updating else { return }
         updating = true; updateProgress = UpdateProgress(stage: "checking")
@@ -234,7 +273,8 @@ struct GoalChannelStatus: Decodable {
                 update = value
                 UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "LastUpdateCheck")
                 updateMessage = value.available ? "新版本 \(value.latestVersion) 可用" : "已是最新版本 \(version)"
-                if announce && autoCheck && value.available { announceUpdate = true }
+                if !manual && autoCheck && autoInstall { scheduleUpdate(value) }
+                if announce && autoCheck && !autoInstall && value.available { announceUpdate = true }
             } else {
                 UserDefaults.standard.set(Date().timeIntervalSince1970 - 5 * 3600, forKey: "LastUpdateCheck")
                 updateMessage = "检查更新未完成，请稍后重试"
@@ -243,25 +283,63 @@ struct GoalChannelStatus: Decodable {
         }
     }
 
-    func installUpdate() {
+    func installUpdate(automatic: Bool = false) {
         guard !updating && !busy else { return }
-        updating = true; error = nil; updateProgress = UpdateProgress(stage: "connecting")
-        updateMessage = updateProgress!.title
-        let arguments = ["--prepare", "--config", config.path, "--app", Bundle.main.bundleURL.path, "--current-version", version, "--progress"]
+        updating = true; installingUpdate = true
+        if !automatic { error = nil }
+        let directory = config
         Task {
-            let prepared = await Self.updateCommand(runtime: runtime, arguments: arguments) { [weak self] value in
-                self?.updateProgress = value; self?.updateMessage = value.title
+            defer { updating = false; installingUpdate = false; updateProgress = nil }
+            let plan: String
+            if let cached = preparedUpdate, cached.version == update?.latestVersion, cached.config == directory {
+                plan = cached.plan
+            } else {
+                updateProgress = UpdateProgress(stage: "connecting"); updateMessage = updateProgress!.title
+                let arguments = ["--prepare", "--config", directory.path, "--app", Bundle.main.bundleURL.path, "--current-version", version, "--progress"]
+                let prepared = await Self.updateCommand(runtime: runtime, arguments: arguments) { [weak self] value in
+                    self?.updateProgress = value; self?.updateMessage = value.title
+                }
+                guard prepared.0 == 0, let data = prepared.1.data(using: .utf8),
+                      let value = try? JSONDecoder().decode(UpdateStatus.self, from: data), let staged = value.plan else {
+                    reportInstallFailure(prepared.1, automatic: automatic); return
+                }
+                update = value
+                if automatic { scheduleUpdate(value) }
+                preparedUpdate = (value.latestVersion, directory, staged)
+                plan = staged
             }
-            guard prepared.0 == 0, let data = prepared.1.data(using: .utf8),
-                  let value = try? JSONDecoder().decode(UpdateStatus.self, from: data), let plan = value.plan else {
-                updating = false; updateProgress = nil; updateMessage = "更新未安装"
-                error = Self.updateError(prepared.1); return
+            if automatic && (!autoCheck || !autoInstall) {
+                updateMessage = "更新已下载，可以手动安装"
+                return
             }
-            updateProgress = UpdateProgress(stage: "installing"); updateMessage = updateProgress!.title
-            let launched = await Self.updateCommand(runtime: runtime, arguments: ["--launch-install", plan, "--wait-pid", String(ProcessInfo.processInfo.processIdentifier)])
-            if launched.0 == 0 { NSApplication.shared.terminate(nil) }
-            else { updating = false; updateProgress = nil; updateMessage = "更新未安装"; error = Self.updateError(launched.1) }
+            var arguments = ["--launch-install", plan, "--wait-pid", String(ProcessInfo.processInfo.processIdentifier)]
+            if automatic {
+                arguments.append("--automatic")
+                if NSApp.activationPolicy() == .accessory { arguments.append("--in-menu-bar") }
+            }
+            updateProgress = UpdateProgress(stage: automatic ? "waiting_for_idle" : "installing"); updateMessage = updateProgress!.title
+            let launched = await Self.updateCommand(runtime: runtime, arguments: arguments)
+            guard launched.0 == 0, let data = launched.1.data(using: .utf8),
+                  let result = try? JSONDecoder().decode(InstallLaunchStatus.self, from: data) else {
+                reportInstallFailure(launched.1, automatic: automatic); return
+            }
+            if result.installerStarted == true {
+                if automatic, let version = preparedUpdate?.version {
+                    UserDefaults.standard.set(["version": version, "time": Date().timeIntervalSince1970], forKey: "LastAutoInstallAttempt")
+                }
+                NSApp.terminate(nil)
+            } else if result.deferred == true && automatic {
+                updateMessage = "更新已下载，等待任务空闲"
+                retryUpdateAfter = Date().addingTimeInterval(60)
+            } else { reportInstallFailure(launched.1, automatic: automatic) }
         }
+    }
+
+    private func reportInstallFailure(_ detail: String, automatic: Bool) {
+        preparedUpdate = nil
+        updateMessage = automatic ? "自动更新未完成，稍后重试" : "更新未安装"
+        if automatic { retryUpdateAfter = Date().addingTimeInterval(15 * 60) }
+        else { error = Self.updateError(detail) }
     }
 
     nonisolated private static func updateCommand(runtime: URL, arguments: [String], progress: (@MainActor @Sendable (UpdateProgress) -> Void)? = nil) async -> (Int32, String) {
@@ -352,10 +430,10 @@ struct ControlView: View {
             HStack(spacing: 10) {
                 Button { model.run(action: nil) } label: {
                     Label("启动服务", systemImage: "play.fill").frame(maxWidth: .infinity)
-                }.buttonStyle(.borderedProminent).disabled(model.busy || model.status.ready)
+                }.buttonStyle(.borderedProminent).disabled(model.busy || model.installingUpdate || model.status.ready)
                 Button { model.run(action: "--stop") } label: {
                     Label("停止服务", systemImage: "stop.fill").frame(maxWidth: .infinity)
-                }.buttonStyle(.bordered).disabled(model.busy || model.status.running.isEmpty)
+                }.buttonStyle(.bordered).disabled(model.busy || model.installingUpdate || model.status.running.isEmpty)
             }.controlSize(.large)
             HStack(spacing: 10) {
                 Button("打开手机网页") { model.openWeb() }.frame(maxWidth: .infinity)
@@ -368,7 +446,7 @@ struct ControlView: View {
                 Button { model.launchGoalChannel() } label: {
                     Label(model.goalChannel.connected ? "Codex 连接通道已启用" : "通过连接通道启动 Codex", systemImage: "link")
                         .frame(maxWidth: .infinity)
-                }.buttonStyle(.bordered).disabled(model.busy || model.goalChannel.connected)
+                }.buttonStyle(.bordered).disabled(model.busy || model.installingUpdate || model.goalChannel.connected)
                 Text(model.goalMessage.isEmpty ? "首次启用请先正常退出 Codex，再用此按钮打开。" : model.goalMessage)
                     .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -382,6 +460,8 @@ struct ControlView: View {
                 }
             }
             Toggle("自动检查 GitHub 更新", isOn: $model.autoCheck).toggleStyle(.checkbox).font(.system(size: 12))
+            Toggle("空闲时自动安装更新", isOn: $model.autoInstall).toggleStyle(.checkbox).font(.system(size: 12))
+                .disabled(!model.autoCheck || model.installingUpdate)
             if model.updating, let progress = model.updateProgress {
                 VStack(alignment: .leading, spacing: 7) {
                     if let fraction = progress.fraction { ProgressView(value: fraction).accessibilityLabel("更新下载进度").accessibilityValue("\(Int(fraction * 100))%") }
@@ -468,6 +548,8 @@ private struct ControlWindowDockVisibility: NSViewRepresentable {
     func updateNSView(_ nsView: Observer, context: Context) {}
 
     final class Observer: NSView {
+        private static var closeOnLaunch = ProcessInfo.processInfo.arguments.contains("--in-menu-bar")
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             let notifications = NotificationCenter.default
@@ -476,6 +558,10 @@ private struct ControlWindowDockVisibility: NSViewRepresentable {
             NSApp.setActivationPolicy(.regular)
             notifications.addObserver(self, selector: #selector(windowWillClose),
                                       name: NSWindow.willCloseNotification, object: window)
+            if Self.closeOnLaunch {
+                Self.closeOnLaunch = false
+                DispatchQueue.main.async { window.close() }
+            }
         }
 
         @objc private func windowWillClose() {

@@ -119,6 +119,7 @@ class Workspace extends ChangeNotifier {
       notice = '',
       search = '',
       sendMode = 'send';
+  bool projectListFailed = false;
   Json device = {}, providersById = {}, threads = {}, receipt = {};
   JsonList projects = [], messages = [], queue = [];
   final Set<String> expandedProjects = {}, loadingProjects = {};
@@ -150,6 +151,11 @@ class Workspace extends ChangeNotifier {
       device['online'] == true &&
       device['connectorOnline'] == true &&
       descriptor['readable'] == true;
+  bool get loadingProjectList =>
+      _pending.contains('projects:$_providerGeneration') ||
+      providersById.isEmpty &&
+          device['connectorOnline'] == true &&
+          _pending.contains('providers:$_providerGeneration');
   bool get _canOperate => online && descriptor['connected'] == true && !busy;
   bool supports(String feature) =>
       (descriptor['features'] as List? ?? []).contains(feature);
@@ -307,6 +313,7 @@ class Workspace extends ChangeNotifier {
     _generation++;
     _providerGeneration++;
     _projectsLoaded = false;
+    projectListFailed = false;
     device = {};
     providersById = {};
     messages = [];
@@ -349,21 +356,27 @@ class Workspace extends ChangeNotifier {
 
   Future<void> refreshProviders() async {
     if (device['online'] != true) return;
-    final scope = _providerGeneration;
-    final value = await api.bridge('/api/providers');
-    if (scope != _providerGeneration || disposed) return;
-    providersById = {
-      for (final item in objects(value['providers']))
-        item['id'] as String: item,
-    };
-    changed();
+    final scope = _providerGeneration, key = 'providers:$_providerGeneration';
+    if (!_pending.add(key)) return;
+    if (providersById.isEmpty) changed();
+    try {
+      final value = await api.bridge('/api/providers');
+      if (scope != _providerGeneration || disposed) return;
+      providersById = {
+        for (final item in objects(value['providers']))
+          item['id'] as String: item,
+      };
+    } finally {
+      _pending.remove(key);
+      if (scope == _providerGeneration) changed();
+    }
   }
 
   Future<void> loadProjects() async {
     final scope = _providerGeneration, chosen = provider;
-    final pendingKey = 'projects:$scope:$chosen';
-    if (!online || _pending.contains(pendingKey)) return;
-    _pending.add(pendingKey);
+    final pendingKey = 'projects:$scope';
+    if (!online || !_pending.add(pendingKey)) return;
+    projectListFailed = false;
     changed();
     try {
       final value = await read('/api/projects');
@@ -372,11 +385,21 @@ class Workspace extends ChangeNotifier {
         _projectsLoaded = true;
       }
     } catch (e) {
-      if (scope == _providerGeneration) _error(e);
+      if (scope == _providerGeneration && !disposed) {
+        _authenticationError(e);
+        if (scope == _providerGeneration) projectListFailed = true;
+      }
     } finally {
       _pending.remove(pendingKey);
-      changed();
+      if (scope == _providerGeneration || !authenticated) changed();
     }
+  }
+
+  Future<void> refreshProjectTree() async {
+    final scope = _providerGeneration;
+    await loadProjects();
+    if (scope != _providerGeneration || disposed) return;
+    await Future.wait(expandedProjects.map(loadProject));
   }
 
   void toggleProject(String id) {
@@ -420,6 +443,7 @@ class Workspace extends ChangeNotifier {
     _generation++;
     _providerGeneration++;
     _projectsLoaded = false;
+    projectListFailed = false;
     projects = [];
     projectChats.clear();
     expandedProjects.clear();

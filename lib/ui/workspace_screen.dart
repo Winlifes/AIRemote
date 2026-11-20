@@ -433,6 +433,10 @@ class _ProjectDrawerState extends State<ProjectDrawer> {
   @override
   Widget build(BuildContext context) {
     final state = widget.state, insets = MediaQuery.viewPaddingOf(context);
+    final query = state.search.toLowerCase();
+    final projects = state.projects.where(
+      (project) => '${project['name']}'.toLowerCase().contains(query),
+    );
     return Drawer(
       key: const Key('sidebar-surface'),
       shape: const RoundedRectangleBorder(),
@@ -563,6 +567,20 @@ class _ProjectDrawerState extends State<ProjectDrawer> {
                 ),
                 const Spacer(),
                 IconButton(
+                  tooltip: state.loadingProjectList && state.projects.isNotEmpty
+                      ? '正在刷新项目列表'
+                      : '刷新项目列表',
+                  onPressed: state.online && !state.loadingProjectList
+                      ? state.refreshProjectTree
+                      : null,
+                  icon: state.loadingProjectList && state.projects.isNotEmpty
+                      ? const SizedBox.square(
+                          dimension: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh, size: 20),
+                ),
+                IconButton(
                   tooltip: '新建对话',
                   onPressed: state.canCreate ? widget.newChat : null,
                   icon: const Icon(Icons.add, size: 24),
@@ -589,11 +607,45 @@ class _ProjectDrawerState extends State<ProjectDrawer> {
             child: ListView(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
               children: [
-                for (final project in state.projects.where(
-                  (p) => '${p['name']}'.toLowerCase().contains(
-                    state.search.toLowerCase(),
+                if (state.projectListFailed)
+                  ListTile(
+                    title: const Text('项目加载失败'),
+                    trailing: TextButton(
+                      onPressed: state.online ? state.refreshProjectTree : null,
+                      child: const Text('重试'),
+                    ),
                   ),
-                )) ...[
+                if (state.loadingProjectList && state.projects.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 36),
+                    child: Semantics(
+                      liveRegion: true,
+                      child: const Column(
+                        children: [
+                          SizedBox.square(
+                            dimension: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          SizedBox(height: 12),
+                          Text('正在加载项目…', style: TextStyle(color: muted)),
+                        ],
+                      ),
+                    ),
+                  )
+                else if (projects.isEmpty && !state.projectListFailed)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 36),
+                    child: Text(
+                      state.projects.isNotEmpty
+                          ? '没有匹配的项目'
+                          : state.online
+                          ? '这里还没有项目'
+                          : '等待电脑连接',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: muted),
+                    ),
+                  ),
+                for (final project in projects) ...[
                   ListTile(
                     contentPadding: const EdgeInsets.only(left: 10, right: 5),
                     visualDensity: const VisualDensity(vertical: -2),

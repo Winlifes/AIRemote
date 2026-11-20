@@ -22,6 +22,7 @@ struct UpdateProgress: Decodable, Sendable {
         case "extracting": return "正在解压更新…"
         case "verifying_app": return "正在验证 Mac 应用…"
         case "prepared": return "更新已准备好"
+        case "waiting_for_idle": return "正在确认任务是否空闲…"
         case "installing": return "正在安装并重新启动…"
         default: return "正在更新…"
         }

@@ -32,7 +32,7 @@ def acquire_agent_lock(config_path):
 
 
 class Agent:
-    def __init__(self, config):
+    def __init__(self, config, update_lock=None):
         self.config = config
         self.base = config["relay_url"].rstrip("/")
         parsed = urlsplit(self.base)
@@ -51,6 +51,7 @@ class Agent:
         self.connector_http = build_opener(ProxyHandler({}), NoRelayRedirect)
         self.executor = ThreadPoolExecutor(max_workers=6)
         self.jobs = {}
+        self.update_lock = update_lock
 
     def remote(self, path, data=None, headers=None, timeout=35):
         combined = {"Authorization": "Bearer " + self.config["agent_token"], **(headers or {})}
@@ -112,51 +113,75 @@ class Agent:
     def run(self):
         print(json.dumps({"agent": VERSION, "relay": self.base, "pid": os.getpid(), "mode": "outbound-only"}), flush=True)
         delay = 1
-        while not self.stop.is_set():
-            try:
-                for key, future in list(self.jobs.items()):
-                    if future.done():
-                        try:
-                            future.result()
-                        except Exception as error:
-                            print(json.dumps({"requestId": key, "error": type(error).__name__}), flush=True)
-                        del self.jobs[key]
-                if len(self.jobs) >= 6:
-                    self.stop.wait(.2)
-                    continue
-                online = False
+        guard = None
+        try:
+            while not self.stop.is_set():
                 try:
-                    status, _, _ = self.local("GET", "/api/health")
-                    online = status == 200
-                except (OSError, URLError, TimeoutError):
-                    pass
-                payload = {"name": self.config.get("device_name", "我的 Mac"), "version": VERSION,
-                           "connectorOnline": online, "error": "" if online else "本地 Codex 连接器不可用"}
-                data = self.remote("/api/agent/poll", json.dumps(payload).encode(), {"Content-Type": "application/json"})
-                delay = 1
-                job = data.get("job")
-                if job and job["id"] not in self.jobs:
-                    self.jobs[job["id"]] = self.executor.submit(self.execute, job)
-            except (OSError, URLError, TimeoutError, ValueError) as error:
-                if isinstance(error, HTTPError) and error.code in {401, 403}:
-                    print(json.dumps({"relayConnection": "registration_revoked"}), flush=True)
-                    self.stop.set()
-                    continue
-                print(json.dumps({"relayConnection": "retrying", "error": type(error).__name__, "retrySeconds": delay}), flush=True)
-                self.stop.wait(delay)
-                delay = min(delay * 2, 30)
-        self.executor.shutdown(wait=True)
+                    for key, future in list(self.jobs.items()):
+                        if future.done():
+                            try:
+                                future.result()
+                            except Exception as error:
+                                print(json.dumps({"requestId": key, "error": type(error).__name__}), flush=True)
+                            del self.jobs[key]
+                    if guard is not None and not self.jobs:
+                        guard.close(); guard = None
+                        if self.stop.wait(.06):
+                            break
+                    if len(self.jobs) >= 6:
+                        self.stop.wait(.2)
+                        continue
+                    if self.update_lock and guard is None:
+                        import fcntl
+                        guard = os.fdopen(os.open(self.update_lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600), 'r+b')
+                        try:
+                            fcntl.flock(guard.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            guard.close(); guard = None
+                            self.stop.wait(.25)
+                            continue
+                        except BaseException:
+                            guard.close(); guard = None
+                            raise
+                    online = False
+                    try:
+                        status, _, _ = self.local("GET", "/api/health")
+                        online = status == 200
+                    except (OSError, URLError, TimeoutError):
+                        pass
+                    payload = {"name": self.config.get("device_name", "我的 Mac"), "version": VERSION,
+                               "connectorOnline": online, "error": "" if online else "本地 Codex 连接器不可用"}
+                    data = self.remote("/api/agent/poll", json.dumps(payload).encode(), {"Content-Type": "application/json"})
+                    delay = 1
+                    job = data.get("job")
+                    if job and job["id"] not in self.jobs:
+                        self.jobs[job["id"]] = self.executor.submit(self.execute, job)
+                except (OSError, URLError, TimeoutError, ValueError) as error:
+                    if guard is not None and not self.jobs:
+                        guard.close(); guard = None
+                    if isinstance(error, HTTPError) and error.code in {401, 403}:
+                        print(json.dumps({"relayConnection": "registration_revoked"}), flush=True)
+                        self.stop.set()
+                        continue
+                    print(json.dumps({"relayConnection": "retrying", "error": type(error).__name__, "retrySeconds": delay}), flush=True)
+                    self.stop.wait(delay)
+                    delay = min(delay * 2, 30)
+        finally:
+            self.executor.shutdown(wait=True)
+            if guard is not None:
+                guard.close()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
+    parser.add_argument('--update-lock', type=Path)
     args = parser.parse_args()
     path = Path(args.config)
     if os.name != 'nt' and path.stat().st_mode & 0o077:
         raise PermissionError("Agent config must have mode 0600")
     with acquire_agent_lock(path):
-        agent = Agent(json.loads(path.read_text()))
+        agent = Agent(json.loads(path.read_text()), args.update_lock)
         signal.signal(signal.SIGTERM, lambda *_: agent.stop.set())
         signal.signal(signal.SIGINT, lambda *_: agent.stop.set())
         agent.run()

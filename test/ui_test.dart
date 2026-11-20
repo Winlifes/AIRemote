@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 // ignore: deprecated_member_use
@@ -5,8 +6,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:airemote_mobile/core/api.dart';
 import 'package:airemote_mobile/core/platform.dart';
 import 'package:airemote_mobile/core/updates.dart';
+import 'package:airemote_mobile/core/workspace.dart';
 import 'package:airemote_mobile/ui/app.dart';
 import 'package:airemote_mobile/ui/composer.dart';
 import 'support.dart';
@@ -130,6 +133,70 @@ void main() {
       },
     );
   }
+  testWidgets(
+    'the sidebar shows project loading and keeps rows during refresh',
+    (tester) async {
+      final codex = Completer<Json>(), deepseek = Completer<Json>();
+      final refresh = Completer<Json>();
+      var deepseekReads = 0;
+      final api = FakeApi()
+        ..respond = (call) => switch (call.path) {
+          '/api/projects' => codex.future,
+          '/api/providers/deepseek/projects' =>
+            deepseekReads++ == 0 ? deepseek.future : refresh.future,
+          _ => FakeApi.defaultResponse(call),
+        };
+      final state = Workspace(api);
+      addTearDown(state.dispose);
+      final started = state.start();
+      await tester.pumpWidget(
+        AIRemoteApp(
+          workspace: state,
+          updater: null,
+          native: NativePlatform(),
+          connect: (_) async {},
+          changeServer: () {},
+        ),
+      );
+      await tester.pump();
+      await tester.tap(find.byTooltip('打开项目与对话'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 350));
+      final loading = find.text('正在加载项目…');
+      expect(loading, findsOneWidget);
+
+      await tester.tap(find.bySemanticsLabel('切换到 DeepSeek'));
+      codex.complete({
+        'projects': [
+          {'id': 'codex', 'name': 'Codex 项目'},
+        ],
+      });
+      await tester.pump();
+      expect(loading, findsOneWidget);
+      expect(find.text('Codex 项目'), findsNothing);
+
+      final data = {
+        'projects': [
+          {'id': 'ds', 'name': 'DeepSeek 项目'},
+        ],
+      };
+      deepseek.complete(data);
+      await tester.pump();
+      expect(loading, findsNothing);
+      expect(find.text('DeepSeek 项目'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('刷新项目列表'));
+      await tester.pump();
+      expect(find.byTooltip('正在刷新项目列表'), findsOneWidget);
+      expect(find.text('DeepSeek 项目'), findsOneWidget);
+      refresh.complete(data);
+      await tester.pump();
+      expect(find.byTooltip('刷新项目列表'), findsOneWidget);
+      await started;
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
   testWidgets(
     'composer morph keeps one focused input and preserves its draft',
     (tester) async {

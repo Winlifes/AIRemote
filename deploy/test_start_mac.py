@@ -33,7 +33,7 @@ finally: server.server_close()
 AGENT = r'''
 import argparse,time
 from pathlib import Path
-p=argparse.ArgumentParser();p.add_argument('--config');args=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--config');p.add_argument('--update-lock');args=p.parse_args()
 if Path(args.config).with_name('agent-fails').exists():raise SystemExit(42)
 try:
     while True:time.sleep(1)

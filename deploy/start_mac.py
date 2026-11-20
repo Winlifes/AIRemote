@@ -29,6 +29,33 @@ def connector_healthy(port, token):
         return False
 
 
+def automatic_update_lock(config_path):
+    return Path(config_path).resolve().parent / 'mac-automatic-update.lock'
+
+
+def automatic_update_readiness(config_path, runtime_root):
+    config_path, cfg = read_runtime_config(config_path)
+    pid_path = config_path.parent / 'mac-processes.json'
+    recorded = json.loads(pid_path.read_text()) if pid_path.exists() else {}
+    scripts = recorded_scripts(config_path, cfg, scripts_at(runtime_root))
+    running = alive(recorded.get('connector'), scripts['connector'])
+    agent_running = alive(recorded.get('agent'), scripts['agent'])
+    if agent_running and not alive(recorded['agent'], '--update-lock ' + str(automatic_update_lock(config_path))):
+        return False, True
+    token = Path(cfg['token_file']).read_text().strip()
+    port = int(cfg.get('connector_port', 8765))
+    if not running:
+        return not connector_healthy(port, token), agent_running
+    try:
+        request = Request('http://127.0.0.1:%s/api/update-readiness' % port,
+                          headers={'Authorization': 'Bearer ' + token})
+        with build_opener(ProxyHandler({})).open(request, timeout=4) as response:
+            status = json.load(response)
+            return isinstance(status, dict) and status.get('idle') is True, True
+    except (OSError, ValueError):
+        return False, True
+
+
 def stop_processes(processes, scripts, names):
     for name in names:
         pid = processes.get(name)
@@ -163,7 +190,8 @@ def launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, s
     connector.extend(['--state-dir', cfg['connector_state'], '--token-file', cfg['token_file'], '--port', str(port)])
     if cfg.get('discover_desktop_projects'):
         connector.append('--discover-desktop-projects')
-    commands = {'connector': connector, 'agent': [sys.executable, str(scripts['agent']), '--config', cfg['agent_config']]}
+    commands = {'connector': connector, 'agent': [sys.executable, str(scripts['agent']), '--config', cfg['agent_config'],
+                                                '--update-lock', str(pid_path.parent / 'mac-automatic-update.lock')]}
     started = []
     launched = {}
     def running(name):

@@ -23,6 +23,7 @@ OTHER = "22222222-2222-4222-8222-222222222222"
 class FakeRPC:
     def __init__(self):
         self.created_threads = set()
+        self.closed = False
         self.calls = []
 
     def request(self, method, params):
@@ -117,6 +118,18 @@ class WriteSafetyTests(unittest.TestCase):
         data = json.dumps(body or {}).encode() if method != "GET" else None
         with urlopen(Request(self.base + path, data=data, headers=headers, method=method), timeout=3) as response:
             return response.status, json.load(response)
+
+    def test_update_readiness_waits_for_owned_codex_and_claude_work(self):
+        path = '/api/update-readiness'
+        with self.assertRaises(HTTPError) as error:
+            self.request('GET', path, authenticate=False)
+        self.assertEqual(error.exception.code, 401)
+        self.assertEqual(self.request('GET', path), (200, {'idle': True}))
+        with patch.object(self.controller.claude, 'running', {THREAD: object()}):
+            self.assertEqual(self.request('GET', path), (200, {'idle': False}))
+        self.rpc.created_threads.add(THREAD)
+        with patch.object(self.rpc, 'request', side_effect=[{'data': [THREAD]}, {'thread': {'status': {'type': 'active'}}}]):
+            self.assertEqual(self.request('GET', path), (200, {'idle': False}))
 
     def test_queue_storage_is_not_execution_acceptance(self):
         self.controller.queue.add = lambda tid, text, client: {"id": OTHER, "clientUserMessageId": client,

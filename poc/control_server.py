@@ -178,6 +178,41 @@ class Controller:
     def history(self, thread_id):
         return History(self.allowed(thread_id), self.artifact_roots)
 
+    def idle_for_update(self):
+        if not self.lock.acquire(blocking=False):
+            return False
+        try:
+            if self.rpc.closed:
+                return False
+            if not self.claude.lock.acquire(blocking=False):
+                return False
+            try:
+                if self.claude.running:
+                    return False
+            finally:
+                self.claude.lock.release()
+            owned = self.rpc.created_threads
+            if not owned:
+                return True
+            params, seen = {}, set()
+            while True:
+                page = self.rpc.request('thread/loaded/list', params, timeout=1)
+                for thread_id in owned.intersection(page['data']):
+                    thread = self.rpc.request('thread/read', {'threadId': thread_id, 'includeTurns': False}, timeout=1)['thread']
+                    if thread['status']['type'] == 'active':
+                        return False
+                cursor = page.get('nextCursor')
+                if cursor is None:
+                    return True
+                if cursor in seen:
+                    return False
+                seen.add(cursor)
+                params = {'cursor': cursor}
+        except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+            return False
+        finally:
+            self.lock.release()
+
     def codex_descriptor(self):
         try:
             _, info, _ = find_codex_installation()
@@ -544,6 +579,8 @@ class ControlHandler(ProbeHandler):
             if path == '/api/health':
                 healthy = not getattr(controller.rpc, 'closed', False)
                 self.respond(200 if healthy else 503, {'ok': healthy, 'version': '0.5.0'})
+            elif path == '/api/update-readiness':
+                self.respond(200, {'idle': controller.idle_for_update()})
             elif path == '/api/providers':
                 self.respond(200, {'providers': [
                     controller.codex_descriptor(),

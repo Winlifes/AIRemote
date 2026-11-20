@@ -12,7 +12,7 @@ import sys
 import time
 import uuid
 
-from start_mac import start_services
+from start_mac import automatic_update_lock, automatic_update_readiness, start_services
 from update_core import DEFAULT_REPO, extract_zip, fetch_asset, latest_release, release_asset, version_tuple, progress_event
 
 BUNDLE_ID = 'fun.winlife.airemote'
@@ -86,33 +86,92 @@ def load_plan(path):
     candidate = Path(plan['candidate']).resolve(strict=True)
     if not candidate.is_relative_to(path.parent / 'unpacked'): raise ValueError('Candidate is outside staging')
     validate_target(plan['app']); verify_bundle(candidate, plan['version'])
+    installer = candidate / 'Contents/Resources/runtime/deploy/update_mac.py'
+    if Path(plan['installer']).resolve(strict=True) != installer or not installer.is_file():
+        raise ValueError('The staged installer does not match the verified app')
     return plan
 
 
-def install_app(candidate, app, config, controller=start_services, opener=None):
+def install_app(candidate, app, config, controller=start_services, opener=None, restart_services=True):
     """Install only already-verified data. Preserve credentials and restore on failure."""
     candidate, app, config = Path(candidate), Path(app), Path(config)
-    previous_runtime = runtime(app, config)
-    controller(config, stop=True, runtime_root=previous_runtime)
     backup = app.with_name('.AIRemote-backup-' + uuid.uuid4().hex[:10] + '.app')
     temporary = app.with_name('.AIRemote-installing-' + uuid.uuid4().hex[:10] + '.app')
-    moved = False
+    moved = replaced = stopped = False
     try:
+        if restart_services:
+            controller(config, stop=True, runtime_root=runtime(app, config))
+            stopped = True
         shutil.copytree(candidate, temporary)
         if app.exists(): os.replace(app, backup); moved = True
         os.replace(temporary, app)
-        controller(config, runtime_root=runtime(app, config))
+        replaced = True
+        if restart_services:
+            controller(config, runtime_root=runtime(app, config))
     except BaseException:
+        if replaced:
+            shutil.rmtree(app)
         if moved:
-            if app.exists(): shutil.rmtree(app)
             os.replace(backup, app)
         if temporary.exists(): shutil.rmtree(temporary)
-        try: controller(config, runtime_root=runtime(app, config))
-        finally:
-            if opener: opener(app)
+        if stopped:
+            controller(config, restart=True, runtime_root=runtime(app, config))
         raise
-    if opener: opener(app)
+    finally:
+        if opener and app.exists(): opener(app)
     return {'installed': True, 'app': str(app), 'backup': str(backup) if moved else None}
+
+
+def launch_install(plan_path, wait_pid, automatic=False, in_menu_bar=False, idle_timeout=24):
+    plan_path = Path(plan_path).resolve(strict=True)
+    plan = load_plan(plan_path)
+    arguments = [sys.executable, plan['installer'], '--perform', str(plan_path), '--wait-pid', str(wait_pid)]
+    if not automatic:
+        return detached_installer(plan_path, arguments)
+    if not os.access(Path(plan['app']).parent, os.W_OK):
+        raise PermissionError('AIRemote cannot update this Applications folder without permission')
+
+    # The Mac agent holds a shared lock through each lease and its result upload.
+    # Pass this descriptor to the installer so the pause survives the GUI exit.
+    lock_path = automatic_update_lock(plan['config'])
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'r+b') as pause:
+        deadline = time.monotonic() + idle_timeout
+        while True:
+            try:
+                fcntl.flock(pause, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    return {'deferred': True}
+                time.sleep(.025)
+        idle, running = automatic_update_readiness(plan['config'], runtime(plan['app'], plan['config']))
+        if not idle:
+            return {'deferred': True}
+        arguments.append('--background')
+        if in_menu_bar:
+            arguments.append('--in-menu-bar')
+        if not running:
+            arguments.append('--keep-services-stopped')
+        return detached_installer(plan_path, arguments, (pause.fileno(),))
+
+
+def detached_installer(plan_path, arguments, pass_fds=()):
+    log = plan_path.parent / 'install.log'
+    with log.open('ab') as output:
+        log.chmod(0o600)
+        process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                                   start_new_session=True, close_fds=True, pass_fds=pass_fds)
+    return {'installerStarted': True, 'pid': process.pid, 'log': str(log)}
+
+
+def reopen_app(app, background, in_menu_bar, keep_services_stopped):
+    args = ['/usr/bin/open', '-n']
+    if background:
+        args.append('-g')
+    app_args = [flag for flag, enabled in (('--in-menu-bar', in_menu_bar),
+                ('--keep-services-stopped', keep_services_stopped)) if enabled]
+    subprocess.run([*args, str(app), *(['--args', *app_args] if app_args else [])], check=True)
 
 
 def wait_for_exit(pid):
@@ -133,25 +192,28 @@ def main():
     parser.add_argument('--config', type=Path); parser.add_argument('--app', type=Path, default=Path('/Applications/AIRemote.app'))
     parser.add_argument('--current-version'); parser.add_argument('--repo', default=DEFAULT_REPO)
     parser.add_argument('--wait-pid', type=int, default=0)
+    parser.add_argument('--automatic', action='store_true')
+    parser.add_argument('--background', action='store_true')
+    parser.add_argument('--in-menu-bar', action='store_true')
+    parser.add_argument('--keep-services-stopped', action='store_true')
     parser.add_argument('--progress', action='store_true', help='Emit live NDJSON progress before the final JSON result')
     args = parser.parse_args()
     progress = (lambda event: print(json.dumps(event, ensure_ascii=False), flush=True)) if args.progress else None
     if args.perform:
         plan = load_plan(args.perform); wait_for_exit(args.wait_pid)
         lock_path = Path(plan['config']).parent / 'updates/install.lock'
-        with lock_path.open('a') as lock:
-            lock_path.chmod(0o600); fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            result = install_app(plan['candidate'], plan['app'], plan['config'],
-                opener=lambda app: subprocess.run(['/usr/bin/open', '-n', str(app)], check=True))
+        app = Path(plan['app'])
+        try:
+            with lock_path.open('a') as lock:
+                lock_path.chmod(0o600); fcntl.flock(lock, fcntl.LOCK_EX)
+                if app.exists() and version_tuple(app_info(app)['CFBundleShortVersionString']) >= version_tuple(plan['version']):
+                    result = {'alreadyCurrent': True}
+                else:
+                    result = install_app(plan['candidate'], app, plan['config'], restart_services=not args.keep_services_stopped)
+        finally:
+            if app.exists(): reopen_app(app, args.background, args.in_menu_bar, args.keep_services_stopped)
     elif args.launch_install:
-        plan = load_plan(args.launch_install)
-        log = args.launch_install.parent / 'install.log'
-        with log.open('ab') as output:
-            log.chmod(0o600)
-            process = subprocess.Popen([sys.executable, plan['installer'], '--perform', str(args.launch_install),
-                '--wait-pid', str(args.wait_pid)], stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
-                start_new_session=True, close_fds=True)
-        result = {'installerStarted': True, 'pid': process.pid, 'log': str(log)}
+        result = launch_install(args.launch_install, args.wait_pid, args.automatic, args.in_menu_bar)
     else:
         current = args.current_version or app_info(args.app)['CFBundleShortVersionString']
         if args.check: _, result = check(current, args.repo, progress)

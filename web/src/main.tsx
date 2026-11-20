@@ -94,6 +94,7 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
   const bridgeResponse = (path: string) => remoteBridgeResponse(providerPath(providerId, path));
   const [hostDevice, setDevice] = useState<Device>(identity.device);
   const [providers, setProviders] = useState<Provider[]>([]);
+  const [providersChecked, setProvidersChecked] = useState(false);
   const provider = providers.find(item => item.id === providerId);
   const device = { ...hostDevice, connectorOnline: hostDevice.online && hostDevice.connectorOnline && !!provider?.readable };
   const [searchOpen, setSearchOpen] = useState(false);
@@ -116,7 +117,8 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
   const [sendMode, setSendMode] = useState<'send' | 'queue'>('send');
   const [busy, setBusy] = useState('');
   const [loading, setLoading] = useState(false);
-  const [listLoading, setListLoading] = useState(false);
+  const [listLoading, setListLoading] = useState(true);
+  const [listFailed, setListFailed] = useState(false);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
   const [newChat, setNewChat] = useState(false);
@@ -141,6 +143,8 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
   const messagesRef = useRef<Message[]>([]);
   const pendingLatest = useRef<MessagePage | null>(null);
   const listRefreshing = useRef(false);
+  const projectListLoading = hostDevice.online && hostDevice.connectorOnline &&
+    (!providersChecked || device.connectorOnline && listLoading);
   const expandedProjectsRef = useRef(new Set<string>());
   const projectRequests = useRef(new Set<string>());
   const pageLoadedRef = useRef(false);
@@ -210,11 +214,11 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
 
   async function loadProjects() {
     if (listRefreshing.current) return projects;
-    listRefreshing.current = true; setListLoading(true);
+    listRefreshing.current = true; setListLoading(true); setListFailed(false);
     try {
       const value = await bridge<{ projects: Project[] }>('/api/projects');
       setProjects(value.projects); return value.projects;
-    } catch (e) { notifyError(e); return projects; }
+    } catch { setListFailed(true); return projects; }
     finally { listRefreshing.current = false; setListLoading(false); }
   }
   async function loadProject(projectId: string) {
@@ -346,7 +350,7 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
       running = true;
       try { const result = await remoteBridge<{ providers: Provider[] }>('/api/providers'); if (!cancelled) setProviders(result.providers); }
       catch (error) { if (!cancelled) setError(errorText(error)); }
-      finally { running = false; }
+      finally { running = false; if (!cancelled) setProvidersChecked(true); }
     };
     poll(); const timer = setInterval(poll, 10000);
     const visible = () => { if (!document.hidden) poll(); };
@@ -522,9 +526,10 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
       })}</div></section>
       <div className="sidebar-title"><div><span className="eyebrow">工作空间</span><h1>项目</h1></div><div className="sidebar-title-actions"><button className={`search-toggle icon-button ${searchOpen ? 'chosen' : ''}`} aria-label={searchOpen ? '关闭项目搜索' : '搜索项目'} aria-expanded={searchOpen} onClick={() => { setSearchOpen(!searchOpen); if (searchOpen) setSearch(''); }}><Search size={20} /></button><button className="new-button" aria-label="新建对话" title="新建对话" disabled={!canCreate || !workspaces.length} onClick={showNewChat}><Plus size={21} /></button></div></div>
       {searchOpen && <label className="search-box provider-search"><Search size={17} /><input autoFocus aria-label="搜索项目" value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => { if (e.key === 'Escape') { setSearchOpen(false); setSearch(''); } }} placeholder={`搜索 ${providerName} 项目…`} /><button className="icon-button" aria-label="清除并关闭搜索" onClick={() => { setSearch(''); setSearchOpen(false); }}><X size={16} /></button></label>}
-      <div className="project-list-toolbar"><span>{projects.length ? `${projects.length} 个项目` : '电脑上的项目'}</span><button className="icon-button" aria-label="刷新项目列表" onClick={refreshProjectTree} disabled={listLoading || !device.connectorOnline}><RefreshCw size={15} className={listLoading ? 'spin' : ''} /></button></div>
+      <div className="project-list-toolbar"><span>{projects.length ? `${projects.length} 个项目` : '电脑上的项目'}</span><button className="icon-button" aria-label={projectListLoading && projects.length ? '正在刷新项目列表' : '刷新项目列表'} onClick={refreshProjectTree} disabled={projectListLoading || !device.connectorOnline}><RefreshCw size={15} className={projectListLoading && projects.length ? 'spin' : ''} /></button></div>
       <div className="thread-list project-tree" aria-label="项目与对话">
-        {listLoading && !projects.length ? <div className="list-empty"><LoaderCircle className="spin" />正在读取电脑上的项目…</div> : filteredProjects.length ? filteredProjects.map(project => {
+        {listFailed && <div className="project-error" role="alert">项目加载失败<button onClick={refreshProjectTree} disabled={!device.connectorOnline || projectListLoading}>重试</button></div>}
+        {projectListLoading && !projects.length ? <div className="list-empty" role="status"><LoaderCircle size={20} className="spin" aria-hidden="true" />正在加载项目…</div> : filteredProjects.length ? filteredProjects.map(project => {
           const open = expandedProjects.has(project.id), ids = projectThreads[project.id];
           return <section className={`project-branch ${open ? 'expanded' : ''}`} key={project.id}>
             <button className="project-row" aria-label={`${open ? '折叠' : '展开'}项目 ${project.name}`} aria-expanded={open} aria-controls={`project-${project.id}`} onClick={() => toggleProject(project.id)}><ChevronRight className="project-chevron" size={14} /><Folder size={19} /><span>{project.name}</span></button>
@@ -540,7 +545,7 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
               })}
             </div>}
           </section>;
-        }) : <div className="list-empty"><Folder size={30} /><strong>{search ? '没有匹配的项目' : device.connectorOnline ? '这里还没有项目' : '等待 Mac 连接'}</strong><span>{device.connectorOnline ? `在 Mac ${providerName} 中添加项目后刷新` : 'Mac 上的连接器会主动连接这里'}</span></div>}
+        }) : !listFailed && <div className="list-empty"><Folder size={30} /><strong>{search && projects.length ? '没有匹配的项目' : device.connectorOnline ? '这里还没有项目' : '等待电脑连接'}</strong></div>}
       </div>
       <div className="sidebar-footer compact-footer"><button className="icon-button" aria-label="退出登录" title="退出登录" onClick={async () => { try { await logout(); onLogout(); } catch (e) { notifyError(e); } }}><LogOut size={18} /></button></div>
     </aside>

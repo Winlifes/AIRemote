@@ -1,3 +1,4 @@
+import fcntl
 import io
 import json
 from pathlib import Path
@@ -5,11 +6,12 @@ import plistlib
 import tempfile
 import tarfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import zipfile
 from urllib.error import URLError
 
 import update_core
+import update_mac
 from update_core import extract_zip, github_url, release_asset, version_tuple
 from update_mac import install_app
 from update_server import switch_release
@@ -66,6 +68,48 @@ class UpdateSafetyTests(unittest.TestCase):
             self.assertEqual((old / 'marker').read_text(), 'old')
             self.assertEqual(config.read_bytes(), original)
             self.assertTrue(calls[0]['stop']); self.assertEqual(len(calls), 3)
+
+    def test_automatic_launch_waits_for_mobile_leases_and_local_tasks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, config, app = root / 'plan.json', root / 'runtime.json', root / 'AIRemote.app'
+            plan.touch()
+            (app / 'Contents/Resources/runtime').mkdir(parents=True)
+            values = {'config': str(config), 'app': str(app), 'installer': 'verified-installer.py'}
+            lock = update_mac.automatic_update_lock(config)
+            with patch.object(update_mac, 'load_plan', return_value=values), \
+                 patch.object(update_mac, 'automatic_update_readiness') as readiness, \
+                 patch.object(update_mac, 'detached_installer') as installer:
+                with lock.open('a+') as active:
+                    fcntl.flock(active, fcntl.LOCK_SH)
+                    self.assertEqual(update_mac.launch_install(plan, 1, automatic=True, idle_timeout=0), {'deferred': True})
+                readiness.assert_not_called()
+                readiness.return_value = (False, True)
+                self.assertEqual(update_mac.launch_install(plan, 1, automatic=True), {'deferred': True})
+                installer.assert_not_called()
+
+                def launch(path, arguments, descriptors):
+                    with lock.open('a+') as active, self.assertRaises(BlockingIOError):
+                        fcntl.flock(active, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    self.assertEqual(len(descriptors), 1)
+                    self.assertIn('--in-menu-bar', arguments)
+                    self.assertIn('--keep-services-stopped', arguments)
+                    return {'installerStarted': True}
+
+                readiness.return_value = (True, False)
+                installer.side_effect = launch
+                self.assertEqual(update_mac.launch_install(plan, 1, automatic=True, in_menu_bar=True), {'installerStarted': True})
+
+    def test_automatic_install_preserves_intentionally_stopped_services(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate, app = root / 'candidate.app', root / 'AIRemote.app'
+            candidate.mkdir(); app.mkdir()
+            (candidate / 'marker').write_text('new')
+            controller = Mock()
+            install_app(candidate, app, root / 'runtime.json', controller=controller, restart_services=False)
+            controller.assert_not_called()
+            self.assertEqual((app / 'marker').read_text(), 'new')
 
     def test_tar_symlink_and_traversal_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
