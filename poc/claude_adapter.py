@@ -125,10 +125,10 @@ class ClaudeCLI:
         self.lock = threading.RLock()
         self.cache = {}
 
-    def cached(self, key, ttl, read):
+    def cached(self, key, ttl, read, *, fresh=False):
         with self.lock:
             expires, value = self.cache.get(key, (0, None))
-            if time.monotonic() >= expires:
+            if fresh or time.monotonic() >= expires:
                 value = read()
                 self.cache[key] = (time.monotonic() + ttl, value)
             return value
@@ -177,7 +177,11 @@ class ClaudeCLI:
                 return None
             return {row['sessionId']: row for row in rows if isinstance(row, dict)
                     and isinstance(row.get('sessionId'), str) and re.fullmatch(UUID, row['sessionId'])}
-        return query() if fresh else self.cached('live', 1.5, query)
+        return self.cached('live', 1.5, query, fresh=fresh)
+
+    def invalidate_live(self):
+        with self.lock:
+            self.cache.pop('live', None)
 
     def write_mode(self):
         def check():
@@ -807,6 +811,7 @@ class ClaudeAdapter:
         self.interrupt(run.process)
         if run.process.poll() is None:
             raise ClaudeError('Claude Code 停止结果待核对，请刷新会话。')
+        self.cli.invalidate_live()
 
     def control(self, key, kind, payload):
         tid = payload['threadId']
@@ -917,6 +922,7 @@ class ClaudeAdapter:
                 self.journal.finish(run.operation, status, final)
                 self.running.pop(row.id, None)
                 self.catalog_until = 0
+                self.cli.invalidate_live()
                 if status != 'applied':
                     self.paused.add(row.id)
                 self.dispatch()

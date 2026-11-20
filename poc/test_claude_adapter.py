@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from uuid import uuid4
 
-from claude_adapter import ClaudeAdapter, ClaudeError, project_id
+from claude_adapter import ClaudeAdapter, ClaudeCLI, ClaudeError, project_id
 from control_server import Journal
 
 
@@ -15,6 +15,9 @@ class LocalCLI:
 
     def live(self, fresh=False):
         return self.current
+
+    def invalidate_live(self):
+        pass
 
     def write_mode(self):
         return self.mode
@@ -134,6 +137,18 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.cli.current = {}
         self.assertEqual(self.adapter.goal(self.tid)['goal']['status'], 'paused')
         self.assertFalse(self.adapter.session(self.tid)['writeAvailable'])
+
+    def test_claude_live_refresh_and_process_exit_discard_old_ownership(self):
+        cli = ClaudeCLI(self.root)
+        native = [{'sessionId': self.tid, 'status': 'working'}]
+        cli.command = lambda _: json.dumps(native).encode()
+        self.assertIn(self.tid, cli.live())
+        native.clear()
+        self.assertEqual(cli.live(fresh=True), {})
+        self.assertEqual(cli.live(), {})
+        native.append({'sessionId': self.tid, 'status': 'idle'})
+        cli.invalidate_live()
+        self.assertIn(self.tid, cli.live())
 
 
 if __name__ == '__main__':
