@@ -68,6 +68,7 @@ class UpdateSafetyTests(unittest.TestCase):
             self.assertEqual((old / 'marker').read_text(), 'old')
             self.assertEqual(config.read_bytes(), original)
             self.assertTrue(calls[0]['stop']); self.assertEqual(len(calls), 3)
+            self.assertTrue(all(call['restart'] for call in calls[1:]))
 
     def test_automatic_launch_waits_for_mobile_leases_and_local_tasks(self):
         with tempfile.TemporaryDirectory() as directory:

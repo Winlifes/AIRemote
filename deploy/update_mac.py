@@ -107,7 +107,8 @@ def install_app(candidate, app, config, controller=start_services, opener=None, 
         os.replace(temporary, app)
         replaced = True
         if restart_services:
-            controller(config, runtime_root=runtime(app, config))
+            # A launcher opened during the swap can have spawned the previous services.
+            controller(config, restart=True, runtime_root=runtime(app, config))
     except BaseException:
         if replaced:
             shutil.rmtree(app)
