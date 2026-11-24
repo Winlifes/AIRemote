@@ -2,6 +2,7 @@
 """Stage a verified GitHub Mac release, then replace the app with rollback."""
 import argparse
 import fcntl
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -12,7 +13,8 @@ import sys
 import time
 import uuid
 
-from start_mac import automatic_update_lock, automatic_update_readiness, start_services
+from mac_background import BackgroundService
+from start_mac import automatic_update_lock, automatic_update_readiness, control_services
 from update_core import DEFAULT_REPO, extract_zip, fetch_asset, latest_release, release_asset, version_tuple, progress_event
 
 BUNDLE_ID = 'fun.winlife.airemote'
@@ -92,9 +94,12 @@ def load_plan(path):
     return plan
 
 
-def install_app(candidate, app, config, controller=start_services, opener=None, restart_services=True):
+def install_app(candidate, app, config, controller=None, opener=None, restart_services=True):
     """Install only already-verified data. Preserve credentials and restore on failure."""
     candidate, app, config = Path(candidate), Path(app), Path(config)
+    if controller is None:
+        managed = sys.platform == 'darwin' and BackgroundService().configuration() == config.resolve()
+        controller = partial(control_services, managed=managed)
     backup = app.with_name('.AIRemote-backup-' + uuid.uuid4().hex[:10] + '.app')
     temporary = app.with_name('.AIRemote-installing-' + uuid.uuid4().hex[:10] + '.app')
     moved = replaced = stopped = False

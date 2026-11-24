@@ -4,7 +4,96 @@ import 'package:airemote_mobile/core/api.dart';
 import 'package:airemote_mobile/core/workspace.dart';
 import 'support.dart';
 
+class EventApi extends FakeApi implements RelayEvents {
+  final subscriptions = <(String, String, String)>[];
+  final streams = <StreamController<RelayEvent>>[];
+
+  @override
+  Future<Json> session() async => {
+    ...await super.session(),
+    'eventStream': true,
+  };
+
+  @override
+  Stream<RelayEvent> watchEvents(
+    String provider,
+    String thread,
+    String cursor,
+  ) {
+    subscriptions.add((provider, thread, cursor));
+    final stream = StreamController<RelayEvent>();
+    streams.add(stream);
+    return stream.stream;
+  }
+
+  @override
+  void close() {
+    for (final stream in streams) {
+      unawaited(stream.close());
+    }
+  }
+}
+
 void main() {
+  testWidgets(
+    'foreground reconnect keeps the cursor and refreshes only the selected chat',
+    (tester) async {
+      final api = EventApi();
+      final workspace = Workspace(api);
+      addTearDown(workspace.dispose);
+      await workspace.start();
+      await workspace.select('a');
+      expect(api.subscriptions.last, ('codex', 'a', ''));
+      api.streams.last.add(
+        const RelayEvent('epoch:12', 'chat', {
+          'provider': 'codex',
+          'threadId': 'a',
+        }),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        api.calls.where(
+          (call) => call.path == '/api/threads/a/messages?limit=40',
+        ),
+        hasLength(2),
+      );
+
+      workspace.setVisible(false);
+      expect(api.streams.last.hasListener, isFalse);
+      workspace.setVisible(true);
+      expect(api.subscriptions.last, ('codex', 'a', 'epoch:12'));
+      await tester.pump();
+      api.calls.clear();
+      api.streams.last.add(
+        const RelayEvent('epoch:13', 'chat', {
+          'provider': 'codex',
+          'threadId': 'b',
+        }),
+      );
+      api.streams.last.add(
+        const RelayEvent('epoch:14', 'chat', {
+          'provider': 'claude',
+          'threadId': 'a',
+        }),
+      );
+      api.streams.last.add(
+        const RelayEvent('epoch:15', 'chat', {
+          'provider': 'codex',
+          'threadId': 'a',
+        }),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        api.calls
+            .where((c) => c.path.contains('/messages?'))
+            .map((c) => c.path),
+        ['/api/threads/a/messages?limit=40'],
+      );
+    },
+  );
+
   test(
     'initial load fetches only projects; expansion and selection are lazy',
     () async {

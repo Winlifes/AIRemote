@@ -15,10 +15,11 @@ import time
 import uuid
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
 from accounts import Accounts, Conflict, Forbidden, LEGACY_DEVICE, OWNER, SESSION_AGE, digest, password_hash
-from protocol import MAX_BODY, MAX_RESULT, validate_request
+from events import DEVICE_TIMEOUT, EventFeed, event_frame
+from protocol import MAX_BODY, MAX_RESULT, PROVIDER_THREADS, chat_watch_path, validate_request
 from routing import Router, Unavailable, combined_state
 
 RESULT_AGE = 15 * 60
@@ -75,7 +76,7 @@ class Store:
         with self.db() as db:
             row = db.execute("SELECT * FROM device WHERE id=1").fetchone()
         row = dict(row) if row else {}
-        row["online"] = bool(row.get("last_seen", 0) > time.time() - 50)
+        row["online"] = bool(row.get("last_seen", 0) > time.time() - DEVICE_TIMEOUT)
         row["connectorOnline"] = bool(row.get("connector_online")) and row["online"]
         return row
 
@@ -148,6 +149,7 @@ class Store:
                 out.write(content)
             os.replace(temp, self.blobs / job_id)
             db.execute("UPDATE jobs SET state='done',status=?,headers=?,finished=? WHERE id=?", (status, json.dumps(headers), time.time(), job_id))
+            return json.loads(row['request'])
 
     def cleanup(self):
         if self.last_cleanup > time.time() - 60:
@@ -169,6 +171,7 @@ class RelayServer(ThreadingHTTPServer):
 
     def __init__(self, address, config, state, static):
         self.config = config
+        self.events = EventFeed()
         self.store = Store(state)
         self.accounts = Accounts(self.store.root, config)
         self.device_stores = {LEGACY_DEVICE: self.store}
@@ -187,6 +190,7 @@ class RelayServer(ThreadingHTTPServer):
             return self.device_stores[device]
 
     def service_actions(self):
+        self.events.expire()
         # Expire cached responses even if the Mac and browsers are both offline.
         now = time.time()
         if self.last_account_cleanup > now - 60:
@@ -311,23 +315,28 @@ class Handler(BaseHTTPRequestHandler):
         store = self.server.device_store(device['id'])
         if path == '/api/agent/poll' and self.command == 'POST':
             value = self.json_body()
+            watch_enabled = value.get('watchSupported') is True
+            connector_online = value.get('connectorOnline') is True
             with accounts.lock:
                 accounts.agent(authorization)
                 store.cleanup()
                 with store.db() as db:
                     db.execute("INSERT INTO device VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,last_seen=excluded.last_seen,connector_online=excluded.connector_online,error=excluded.error,agent_version=excluded.agent_version", (
-                        str(value.get('name', device['name']))[:80], time.time(), int(value.get('connectorOnline') is True),
+                        str(value.get('name', device['name']))[:80], time.time(), int(connector_online),
                         str(value.get('error', ''))[:200], str(value.get('version', 'unknown'))[:40]))
-            deadline = time.monotonic() + 20
-            while time.monotonic() < deadline:
+                self.server.events.heartbeat(device['account'], device['id'], connector_online)
+                if watch_enabled:
+                    self.server.events.observe(device['id'], value.get('revisions'))
+            started = time.monotonic()
+            while True:
                 with accounts.lock:
                     accounts.agent(authorization)
-                    job = store.claim()
-                if job:
-                    return self.respond(200, {'job': job})
+                    job = store.claim() if connector_online else None
+                watches = self.server.events.paths(device['id']) if watch_enabled else []
+                if job or time.monotonic() - started >= (2.5 if watches else 20):
+                    return self.respond(200, {'job': job, **({'watch': watches} if watch_enabled else {})})
                 with store.condition:
                     store.condition.wait(timeout=1)
-            return self.respond(200, {'job': None})
         parts = path.strip('/').split('/')
         if len(parts) == 5 and parts[:3] == ['api', 'agent', 'jobs'] and parts[4] == 'result' and self.command == 'POST':
             job_id = str(uuid.UUID(parts[3]))
@@ -343,9 +352,53 @@ class Handler(BaseHTTPRequestHandler):
             content = self.body(MAX_RESULT)
             with accounts.lock:
                 accounts.agent(authorization)
-                store.finish(job_id, lease, status, headers, content)
+                request = store.finish(job_id, lease, status, headers, content)
+                if request and request['method'] != 'GET' and status < 300:
+                    self.server.events.changed(device['id'], request['path'])
             return self.respond(200, {'saved': True})
         raise LookupError('Unknown agent endpoint')
+
+    def event_stream(self, account, query):
+        params = parse_qs(query)
+        provider = params.get('provider', ['codex'])[0]
+        thread_id = params.get('thread', [''])[0]
+        cursor = self.headers.get('Last-Event-ID') or params.get('cursor', [''])[0]
+        prefix = {'codex': '/api', 'claude': '/api/providers/claude', 'deepseek': '/api/providers/deepseek'}.get(provider)
+        if provider not in PROVIDER_THREADS or thread_id and not chat_watch_path(f'{prefix}/threads/{thread_id}'):
+            raise ValueError('无效的对话订阅')
+        locations = self.server.router.watch_targets(account, provider, thread_id) if thread_id else []
+        events = self.server.events
+        try:
+            with events.subscribe(account):
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+                self.send_header('Cache-Control', 'no-store, no-transform')
+                self.send_header('Connection', 'close')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.end_headers()
+                self.close_connection = True
+                self.wfile.write(b'retry: 2000\n\n')
+                self.wfile.flush()
+                deadline = time.monotonic() + 32
+                while time.monotonic() < deadline:
+                    if self.user()['account'] != account:
+                        break
+                    for device, native in locations:
+                        path = f'{prefix}/threads/{native}'
+                        if chat_watch_path(path):
+                            events.watch(account, device, path, provider, thread_id)
+                    replay = events.read(account, cursor)
+                    if self.user()['account'] != account:
+                        break
+                    for cursor, kind, data in replay:
+                        self.wfile.write(event_frame(cursor, kind, data))
+                    if not replay:
+                        self.wfile.write(b': heartbeat\n\n')
+                    self.wfile.flush()
+        except OverflowError:
+            self.respond(429, {'error': '事件连接数已达上限'})
+        except (OSError, sqlite3.Error):
+            pass  # The client disconnected or its session expired after headers were sent.
 
     def admin_route(self, path, account):
         if account != OWNER:
@@ -368,9 +421,11 @@ class Handler(BaseHTTPRequestHandler):
                     if not enabled:
                         for device in accounts.devices(identifier):
                             self.server.device_store(device['id']).disconnect()
+                            self.server.events.disconnect(identifier, device['id'])
             elif (resource, action) == ('devices', 'revoke'):
-                accounts.revoke_device(identifier)
+                affected = accounts.revoke_device(identifier)
                 self.server.device_store(identifier).disconnect()
+                self.server.events.disconnect(affected, identifier)
             else:
                 raise LookupError('找不到此管理操作。')
             return self.respond(200, {'ok': True})
@@ -402,7 +457,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.admin_route(path, account)
             if path == '/api/session' and self.command == 'GET':
                 return self.respond(200, {'username': session['username'], 'accountId': account, 'isAdmin': account == OWNER,
-                                          'csrf': session['csrf'], 'device': combined_state(router.devices(account))})
+                                          'csrf': session['csrf'], 'eventStream': True, 'device': combined_state(router.devices(account))})
             if path == '/api/logout' and self.command == 'POST':
                 if session.get('legacy'):
                     with store.db() as db:
@@ -412,6 +467,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, {'ok': True}, {'Set-Cookie': self.cookie('', 0)})
             if path == '/api/device' and self.command == 'GET':
                 return self.respond(200, combined_state(router.devices(account)))
+            if path == '/api/events' and self.command == 'GET':
+                return self.event_stream(account, urlsplit(self.path).query)
             if path == '/api/account' and self.command == 'GET':
                 return self.respond(200, {'username': session['username'], 'isAdmin': account == OWNER,
                                           'devices': router.devices(account)})
@@ -422,6 +479,7 @@ class Handler(BaseHTTPRequestHandler):
                     and parts[4] == 'revoke'):
                 accounts.revoke_device(parts[3], account)
                 self.server.device_store(parts[3]).disconnect()
+                self.server.events.disconnect(account, parts[3])
                 return self.respond(200, {'ok': True})
             if path == '/api/requests' and self.command == 'POST':
                 return self.respond(202, self.job_public(router.submit(account, validate_request(self.json_body()))))

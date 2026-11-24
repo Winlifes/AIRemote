@@ -66,6 +66,28 @@ class RelayClient implements HttpClient {
 
 void main() {
   test(
+    'event frames preserve the cursor across heartbeats and chunk boundaries',
+    () async {
+      final bytes = utf8.encode(
+        'retry: 2000\r\n\r\n'
+        'id: epoch:5\r\nevent: chat\r\ndata: {"threadId":"对话"}\r\n\r\n'
+        ': heartbeat\n\nevent: device\ndata: {}\n\n'
+        'id: epoch:8\nevent: reset\ndata: {}\n\n',
+      );
+      final chunks = Stream<List<int>>.fromIterable(
+        bytes.map((byte) => [byte]),
+      );
+      final frames = await readRelayEvents(chunks).toList();
+      expect(frames.map((frame) => frame.kind), ['chat', 'device', 'reset']);
+      expect(frames.map((frame) => frame.id), [
+        'epoch:5',
+        'epoch:5',
+        'epoch:8',
+      ]);
+      expect(frames.first.data['threadId'], '对话');
+    },
+  );
+  test(
     'native registration establishes the session used by account actions',
     () async {
       final client = RelayClient([

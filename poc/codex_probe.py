@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import islice
 from urllib.parse import quote, unquote, urlsplit
 
-from codex_rollout import rollout_reader
+from codex_rollout import RolloutTail, history_base, inherited_history, managed_rollout, rollout_reader, rollout_roots
 
 
 MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
@@ -127,24 +127,46 @@ class History:
     def _rollout_tail(self, db):
         try:
             with closing(connect_read_only(self.state_path)) as state:
-                row = state.execute('SELECT rollout_path FROM threads WHERE id=?', (self.thread_id,)).fetchone()
-            if not row or not row['rollout_path']:
-                return None
-            path = Path(row['rollout_path']).resolve(strict=True)
-            if (path.suffix != '.jsonl' or not path.is_file() or not any(
-                    path.is_relative_to((self.home / directory).resolve()) for directory in ('sessions', 'archived_sessions'))):
-                return None
-            checkpoint = None
-            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_history_projection_state'").fetchone():
-                checkpoint = db.execute('SELECT next_rollout_byte_offset,next_rollout_ordinal FROM thread_history_projection_state '
-                                        'WHERE thread_id=?', (self.thread_id,)).fetchone()
-            return rollout_reader(path, self.thread_id).tail(checkpoint)
+                def lookup(thread_id):
+                    row = state.execute('SELECT rollout_path FROM threads WHERE id=?', (thread_id,)).fetchone()
+                    return row['rollout_path'] if row else None
+
+                roots = rollout_roots(self.home)
+                path = managed_rollout(lookup(self.thread_id), roots)
+                if path is None:
+                    return None
+                checkpoint = None
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_history_projection_state'").fetchone():
+                    checkpoint = db.execute('SELECT next_rollout_byte_offset,next_rollout_ordinal FROM thread_history_projection_state '
+                                            'WHERE thread_id=?', (self.thread_id,)).fetchone()
+                current = rollout_reader(path, self.thread_id).tail(checkpoint)
+                if current is None:
+                    return None
+                metadata, tail = current
+                base = history_base(metadata)
+                if base and (base.rollout_id != self.thread_id or checkpoint is None or checkpoint[1] < base.ordinal):
+                    return self._merge_inherited(roots, lookup, path, metadata, base, tail)
+                return tail
         except sqlite3.OperationalError as e:
             if 'no such column: rollout_path' not in str(e):
                 raise
-        except (OSError, ValueError, TypeError, RuntimeError):
+        except (OSError, ValueError, TypeError, RuntimeError, EOFError):
             pass
         return None
+
+    def _merge_inherited(self, roots, lookup, path, metadata, base, tail):
+        if metadata.get('attached_thread') or metadata.get('subagent_history_start_ordinal') is not None:
+            return tail
+        try:
+            messages, turns = inherited_history(roots, lookup, path, self.thread_id, base)
+        except (OSError, ValueError, EOFError):
+            # The visible leaf remains readable when an old archive is absent.
+            return tail
+        messages.update((message['itemId'], message) for message in tail.messages)
+        for turn_id, turn in tail.turns.items():
+            turns[turn_id] = {**turns.get(turn_id, {}), **turn}
+        ordered = tuple(sorted(messages.values(), key=lambda item: (item['ordinal'], item['itemId'])))
+        return RolloutTail(0, ordered, turns)
 
     def _prefix(self, tail):
         if tail is None:

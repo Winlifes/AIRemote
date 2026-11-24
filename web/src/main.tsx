@@ -140,6 +140,7 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
   drawerOpenRef.current = drawerOpen;
   const selectionRef = useRef(selected);
   const reader = useRef(new ConversationReader(selected));
+  const eventCursor = useRef('');
   const messagesRef = useRef<Message[]>([]);
   const pendingLatest = useRef<MessagePage | null>(null);
   const listRefreshing = useRef(false);
@@ -402,6 +403,60 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
     document.addEventListener('visibilitychange', visible);
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', visible); };
   }, [selected, device.connectorOnline, mobile, drawerOpen]);
+  useEffect(() => {
+    if (!identity.eventStream || typeof EventSource === 'undefined') return;
+    const watched = mobile && drawerOpen ? '' : selected;
+    let stream: EventSource | undefined;
+    let retry: number | undefined;
+    let refresh: number | undefined;
+    let readDevice = false, readChat = false;
+    let active = true;
+
+    function stop() {
+      stream?.close(); stream = undefined;
+      window.clearTimeout(retry); window.clearTimeout(refresh);
+      refresh = undefined;
+      readDevice = readChat = false;
+    }
+    function connect() {
+      if (document.hidden || stream) return;
+      const params = new URLSearchParams({ provider: providerId });
+      if (watched) params.set('thread', watched);
+      if (eventCursor.current) params.set('cursor', eventCursor.current);
+      stream = new EventSource(`/api/events?${params}`);
+      const apply = (event: MessageEvent) => {
+        eventCursor.current = event.lastEventId || eventCursor.current;
+        if (event.type === 'chat') {
+          try {
+            const change = JSON.parse(event.data);
+            if (!watched || change.provider !== providerId || change.threadId !== watched) return;
+          } catch { return; }
+        }
+        readDevice ||= event.type === 'device' || event.type === 'reset';
+        readChat ||= !!watched && (event.type === 'chat' || event.type === 'reset');
+        refresh ??= window.setTimeout(() => {
+          refresh = undefined;
+          const deviceChanged = readDevice, chatChanged = readChat;
+          readDevice = readChat = false;
+          if (chatChanged && device.connectorOnline) loadDetail(watched, true);
+          if (deviceChanged) api<Device>('/api/device').then(value => {
+            if (active) setDevice(value);
+          }).catch(() => {});
+        }, 80);
+      };
+      for (const kind of ['chat', 'device', 'reset']) stream.addEventListener(kind, apply);
+      stream.onerror = () => {
+        if (stream?.readyState === EventSource.CLOSED) {
+          stop();
+          retry = window.setTimeout(connect, 5000);
+        }
+      };
+    }
+    const visibility = () => { if (document.hidden) stop(); else connect(); };
+    connect();
+    document.addEventListener('visibilitychange', visibility);
+    return () => { active = false; stop(); document.removeEventListener('visibilitychange', visibility); };
+  }, [identity.eventStream, providerId, selected, device.connectorOnline, mobile, drawerOpen]);
   useLayoutEffect(() => {
     const restore = scrollRestore.current, element = scrollRef.current;
     if (restore && element && restore.threadId === selected) {

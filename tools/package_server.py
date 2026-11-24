@@ -11,7 +11,7 @@ def main():
     parser.add_argument('--output', type=Path, default=root / 'dist/AIRemote-server.tar.gz')
     args = parser.parse_args()
     if not (root / 'web/dist/index.html').is_file(): raise ValueError('Build web assets first')
-    files = [root / name for name in ['VERSION', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'relay/server.py', 'relay/protocol.py', 'relay/accounts.py', 'relay/routing.py',
+    files = [root / name for name in ['VERSION', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'relay/server.py', 'relay/events.py', 'relay/protocol.py', 'relay/accounts.py', 'relay/routing.py',
         'deploy/install.py', 'deploy/setup_relay.py', 'deploy/update_core.py', 'deploy/update_server.py',
         'deploy/airemote.service', 'deploy/airemote-update.service', 'deploy/airemote-update.timer']]
     files += sorted(path for path in (root / 'web/dist').rglob('*') if path.is_file())

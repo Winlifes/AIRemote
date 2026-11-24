@@ -134,6 +134,13 @@ class Workspace extends ChangeNotifier {
   bool _projectsLoaded = false;
   int _generation = 0, _providerGeneration = 0, _goalEpoch = 0;
   Timer? _conversationTimer, _metadataTimer, _projectTimer;
+  StreamSubscription<RelayEvent>? _eventSubscription;
+  Timer? _eventReconnect, _eventRefresh;
+  bool _eventsAvailable = false,
+      _refreshEventDevice = false,
+      _refreshEventChat = false;
+  String _eventCursor = '';
+  int _eventGeneration = 0;
   Workspace(this.api);
   Json? get chat => threads[selected] is Map
       ? Map<String, dynamic>.from(threads[selected])
@@ -217,11 +224,83 @@ class Workspace extends ChangeNotifier {
 
   Future<Json> read(String path) => api.bridge(providerPath(provider, path));
 
+  void _stopEvents() {
+    _eventGeneration++;
+    _eventReconnect?.cancel();
+    _eventRefresh?.cancel();
+    _eventRefresh = null;
+    _refreshEventDevice = _refreshEventChat = false;
+    unawaited(_eventSubscription?.cancel());
+    _eventSubscription = null;
+  }
+
+  void _connectEvents() {
+    _stopEvents();
+    final source = api;
+    if (!_eventsAvailable ||
+        !authenticated ||
+        !visible ||
+        disposed ||
+        source is! RelayEvents) {
+      return;
+    }
+    final scope = _eventGeneration;
+    void reconnect() {
+      if (scope != _eventGeneration || disposed) return;
+      _eventReconnect?.cancel();
+      _eventReconnect = Timer(const Duration(seconds: 2), _connectEvents);
+    }
+
+    _eventSubscription = (source as RelayEvents)
+        .watchEvents(provider, drawerOpen ? '' : selected, _eventCursor)
+        .listen(
+          (event) {
+            if (scope != _eventGeneration || disposed) return;
+            _eventCursor = event.id;
+            final reset = event.kind == 'reset';
+            _refreshEventDevice |= reset || event.kind == 'device';
+            _refreshEventChat |=
+                !drawerOpen &&
+                selected.isNotEmpty &&
+                (reset ||
+                    event.kind == 'chat' &&
+                        event.data['provider'] == provider &&
+                        event.data['threadId'] == selected);
+            if (_refreshEventDevice || _refreshEventChat) {
+              _eventRefresh ??= Timer(
+                const Duration(milliseconds: 80),
+                () async {
+                  _eventRefresh = null;
+                  final readDevice = _refreshEventDevice,
+                      readChat = _refreshEventChat;
+                  _refreshEventDevice = _refreshEventChat = false;
+                  if (readDevice) await refreshDevice();
+                  if (readChat && scope == _eventGeneration) {
+                    unawaited(refreshChat());
+                  }
+                },
+              );
+            }
+          },
+          onError: (Object error) {
+            if (scope != _eventGeneration) return;
+            if (error is ApiError && error.status == 401) {
+              _authenticationError(error);
+              changed();
+            } else {
+              reconnect();
+            }
+          },
+          onDone: reconnect,
+        );
+  }
+
   Future<void> start() async {
     try {
       final value = await api.session();
       authenticated = true;
       device = Map<String, dynamic>.from(value['device'] ?? {});
+      _eventsAvailable = value['eventStream'] == true;
     } catch (e) {
       if (e is! ApiError || e.status != 401) error = '$e';
     }
@@ -236,6 +315,7 @@ class Workspace extends ChangeNotifier {
       }
     }
     if (disposed) return;
+    _connectEvents();
     _conversationTimer = Timer.periodic(const Duration(milliseconds: 2500), (
       _,
     ) {
@@ -270,8 +350,10 @@ class Workspace extends ChangeNotifier {
       _clearAccount();
       device = Map<String, dynamic>.from(value['device'] ?? {});
       authenticated = true;
+      _eventsAvailable = value['eventStream'] == true;
       await refreshProviders();
       await loadProjects();
+      _connectEvents();
     } catch (e) {
       error = '$e';
     } finally {
@@ -307,6 +389,9 @@ class Workspace extends ChangeNotifier {
   }
 
   void _clearAccount() {
+    _stopEvents();
+    _eventsAvailable = false;
+    _eventCursor = '';
     authenticated = false;
     selected = '';
     drawerOpen = false;
@@ -460,17 +545,22 @@ class Workspace extends ChangeNotifier {
     sendMode = 'send';
     laneErrors.clear();
     changed();
+    _connectEvents();
     await loadProjects();
   }
 
   void setDrawer(bool open) {
+    final changedScope = open != drawerOpen;
     drawerOpen = open;
+    if (changedScope) _connectEvents();
     changed();
     if (!open && selected.isNotEmpty && online) refreshChat();
   }
 
   void setVisible(bool value) {
+    final changedScope = value != visible;
     visible = value;
+    if (changedScope) _connectEvents();
     if (value) {
       refreshDevice();
       if (!drawerOpen && selected.isNotEmpty) refreshChat();
@@ -494,6 +584,7 @@ class Workspace extends ChangeNotifier {
     error = '';
     loading = true;
     changed();
+    _connectEvents();
     await refreshChat();
   }
 
@@ -866,6 +957,7 @@ class Workspace extends ChangeNotifier {
   @override
   void dispose() {
     disposed = true;
+    _stopEvents();
     _generation++;
     _conversationTimer?.cancel();
     _metadataTimer?.cancel();

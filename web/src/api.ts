@@ -1,5 +1,5 @@
 export type Device = { online: boolean; connectorOnline: boolean; name?: string; last_seen?: number; error?: string; deviceCount?: number; onlineCount?: number; catalogRevision?: string };
-export type RelaySession = { username: string; accountId?: string; isAdmin?: boolean; csrf: string; device: Device };
+export type RelaySession = { username: string; accountId?: string; isAdmin?: boolean; csrf: string; device: Device; eventStream?: boolean };
 declare global {
   interface Window { AIRemoteAndroid?: { download: (url: string, name: string, mime: string) => void; openSettings: () => void } }
 }

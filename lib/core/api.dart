@@ -65,7 +65,39 @@ abstract interface class RemoteApi {
   void close();
 }
 
-class RelayApi implements RemoteApi {
+class RelayEvent {
+  final String id, kind;
+  final Json data;
+  const RelayEvent(this.id, this.kind, this.data);
+}
+
+abstract interface class RelayEvents {
+  Stream<RelayEvent> watchEvents(String provider, String thread, String cursor);
+}
+
+Stream<RelayEvent> readRelayEvents(Stream<List<int>> bytes) async* {
+  var id = '', kind = '';
+  List<String> data = [];
+  await for (final line
+      in bytes.transform(utf8.decoder).transform(const LineSplitter())) {
+    if (line.isEmpty) {
+      if (id.isNotEmpty && data.isNotEmpty) {
+        final value = jsonDecode(data.join('\n'));
+        if (value is Map<String, dynamic>) yield RelayEvent(id, kind, value);
+      }
+      kind = '';
+      data = [];
+    } else if (line.startsWith('id:')) {
+      id = line.substring(3).trim();
+    } else if (line.startsWith('event:')) {
+      kind = line.substring(6).trim();
+    } else if (line.startsWith('data:')) {
+      data.add(line.substring(5).trimLeft());
+    }
+  }
+}
+
+class RelayApi implements RemoteApi, RelayEvents {
   @override
   final String server;
   final Vault vault;
@@ -85,6 +117,57 @@ class RelayApi implements RemoteApi {
 
   @override
   String get cookieHeader => _cookie;
+
+  @override
+  Stream<RelayEvent> watchEvents(
+    String provider,
+    String thread,
+    String cursor,
+  ) {
+    final eventsClient = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 10);
+    final generation = _sessionGeneration;
+    final events = StreamController<RelayEvent>(
+      onCancel: () => eventsClient.close(force: true),
+    );
+    events.onListen = () async {
+      try {
+        final url = Uri.parse('$server/api/events').replace(
+          queryParameters: {
+            'provider': provider,
+            if (thread.isNotEmpty) 'thread': thread,
+          },
+        );
+        final request = await eventsClient.getUrl(url);
+        _ensureSession(generation);
+        request.followRedirects = false;
+        request.headers.set(HttpHeaders.acceptHeader, 'text/event-stream');
+        request.headers.set(HttpHeaders.cookieHeader, _cookie);
+        if (cursor.isNotEmpty) request.headers.set('Last-Event-ID', cursor);
+        final response = await request.close().timeout(
+          const Duration(seconds: 12),
+        );
+        _ensureSession(generation);
+        if (response.statusCode != 200 ||
+            response.headers.contentType?.mimeType != 'text/event-stream') {
+          throw ApiError('暂时无法连接同步服务', response.statusCode);
+        }
+        await for (final item in readRelayEvents(
+          response.timeout(const Duration(seconds: 22)),
+        )) {
+          _ensureSession(generation);
+          if (!events.hasListener) break;
+          events.add(item);
+        }
+      } catch (e, stack) {
+        if (events.hasListener) events.addError(e, stack);
+      } finally {
+        eventsClient.close(force: true);
+        unawaited(events.close());
+      }
+    };
+    return events.stream;
+  }
 
   void _ensureSession(int generation) {
     if (generation != _sessionGeneration) {

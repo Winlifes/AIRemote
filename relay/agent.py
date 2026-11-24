@@ -2,6 +2,7 @@
 """Mac -> relay outbound agent. Local token never leaves the Mac."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from local_lock import exclusive_lock
-from protocol import MAX_RESULT, validate_request
+from protocol import MAX_RESULT, chat_watch_path, validate_request
 
 VERSION = (Path(__file__).resolve().parents[1] / 'VERSION').read_text().strip()
 
@@ -52,6 +53,7 @@ class Agent:
         self.executor = ThreadPoolExecutor(max_workers=6)
         self.jobs = {}
         self.update_lock = update_lock
+        self.watch = []
 
     def remote(self, path, data=None, headers=None, timeout=35):
         combined = {"Authorization": "Bearer " + self.config["agent_token"], **(headers or {})}
@@ -59,7 +61,7 @@ class Agent:
         with self.relay_http.open(request, timeout=timeout) as response:
             return json.load(response)
 
-    def local(self, method, path, body=None, key=None):
+    def local(self, method, path, body=None, key=None, timeout=90):
         headers = {"Authorization": "Bearer " + self.local_token}
         data = None
         if method != "GET":
@@ -67,7 +69,7 @@ class Agent:
             headers.update({"Content-Type": "application/json", "Idempotency-Key": key})
         request = Request(self.connector + path, data=data, headers=headers, method=method)
         try:
-            response = self.connector_http.open(request, timeout=90)
+            response = self.connector_http.open(request, timeout=timeout)
         except HTTPError as error:
             response = error
         with response:
@@ -75,6 +77,19 @@ class Agent:
             if len(content) > MAX_RESULT:
                 raise ValueError("Connector result exceeds 64 MiB")
             return response.code, dict(response.headers), content
+
+    def revisions(self):
+        result = {}
+        for path in self.watch:
+            if self.stop.is_set():
+                break
+            try:
+                status, _, content = self.local('GET', path + '/messages?limit=1', timeout=1.5)
+                if status == 200:
+                    result[path] = hashlib.sha256(content).hexdigest()
+            except (OSError, TimeoutError, ValueError):
+                pass
+        return result
 
     def execute(self, job):
         try:
@@ -145,14 +160,17 @@ class Agent:
                             raise
                     online = False
                     try:
-                        status, _, _ = self.local("GET", "/api/health")
+                        status, _, _ = self.local("GET", "/api/health", timeout=2)
                         online = status == 200
                     except (OSError, URLError, TimeoutError):
                         pass
                     payload = {"name": self.config.get("device_name", "我的 Mac"), "version": VERSION,
-                               "connectorOnline": online, "error": "" if online else "本地 Codex 连接器不可用"}
+                               "connectorOnline": online, "error": "" if online else "本地连接器不可用",
+                               'watchSupported': True, 'revisions': self.revisions() if online else {}}
                     data = self.remote("/api/agent/poll", json.dumps(payload).encode(), {"Content-Type": "application/json"})
                     delay = 1
+                    watch = data.get('watch')
+                    self.watch = [path for path in watch[:8] if chat_watch_path(path)] if isinstance(watch, list) else []
                     job = data.get("job")
                     if job and job["id"] not in self.jobs:
                         self.jobs[job["id"]] = self.executor.submit(self.execute, job)

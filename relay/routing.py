@@ -76,6 +76,13 @@ class Router:
             return db.execute('SELECT device,native FROM aliases WHERE account=? AND provider=? AND kind=? AND public=? ORDER BY device,native',
                               (account, provider, kind, public)).fetchall()
 
+    def watch_targets(self, account, provider, public):
+        devices = {row['id'] for row in self.accounts.devices(account)}
+        bindings = self.bindings(account, provider, 'threads', public)
+        if not bindings and LEGACY_DEVICE in devices:
+            return [(LEGACY_DEVICE, public)]
+        return [(row['device'], row['native']) for row in bindings if row['device'] in devices]
+
     def devices(self, account, include_revoked=False):
         results = []
         for device in self.accounts.devices(account, include_revoked):

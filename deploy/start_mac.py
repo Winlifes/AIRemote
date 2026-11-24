@@ -8,8 +8,11 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
 import time
 from urllib.request import Request, build_opener, ProxyHandler
+
+from mac_background import BackgroundService
 
 
 def alive(pid, script):
@@ -118,7 +121,7 @@ def read_runtime_config(location):
         raise ConfigUnavailable(os.EX_NOPERM, str(error)) from error
 
 
-def start_services(config_path, restart=False, stop=False, startup_timeout=20, runtime_root=None):
+def start_services(config_path, restart=False, stop=False, startup_timeout=20, runtime_root=None, keep_relay=False):
     config_path, cfg = read_runtime_config(config_path)
     project = Path(cfg['project']).resolve(strict=True)
     private = config_path.parent
@@ -140,7 +143,7 @@ def start_services(config_path, restart=False, stop=False, startup_timeout=20, r
                 # A source checkout can inspect/reuse a newer bundled runtime;
                 # it must not accidentally replace it with an older checkout.
                 scripts = existing
-        result = launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, stop, startup_timeout)
+        result = launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, stop, startup_timeout, keep_relay)
         record = private / 'mac-service-scripts.json'
         if stop: record.unlink(missing_ok=True)
         else:
@@ -166,11 +169,13 @@ def service_status(config_path, runtime_root=None):
                 providers = json.load(response).get('providers', [])
         except (OSError, ValueError):
             pass
-    return {'running': running, 'connectorHealthy': healthy, 'agentRunning': 'agent' in running,
+    background = BackgroundService() if sys.platform == 'darwin' else None
+    managed = bool(background and background.configuration() == config_path and background.loaded())
+    return {'running': running, 'connectorHealthy': healthy, 'agentRunning': 'agent' in running, 'backgroundManaged': managed,
             'relay': cfg['relay_url'], 'providers': providers, 'logsDirectory': str(config_path.parent / 'logs')}
 
 
-def launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, stop, startup_timeout):
+def launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, stop, startup_timeout, keep_relay=False):
     processes = json.loads(pid_path.read_text()) if pid_path.exists() else {}
     if stop or restart:
         stop_processes(processes, scripts, ['agent', 'connector'])
@@ -179,11 +184,6 @@ def launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, s
             pid_path.unlink(missing_ok=True)
             return {'stopped': True}
     recovered = []
-    if alive(processes.get('connector'), scripts['connector']) and not connector_healthy(port, token):
-        print('检测到失效的 Codex 连接器，正在恢复…', flush=True)
-        stop_processes(processes, scripts, ['connector'])
-        save_processes(pid_path, processes)
-        recovered.append('connector')
     connector = [sys.executable, str(scripts['connector'])]
     for flag, values in [('--thread', cfg['threads']), ('--artifact-root', cfg['artifact_roots']), ('--workspace-root', cfg['workspace_roots'])]:
         for value in values: connector.extend([flag, value])
@@ -192,6 +192,7 @@ def launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, s
         connector.append('--discover-desktop-projects')
     commands = {'connector': connector, 'agent': [sys.executable, str(scripts['agent']), '--config', cfg['agent_config'],
                                                 '--update-lock', str(pid_path.parent / 'mac-automatic-update.lock')]}
+    names = ('agent', 'connector') if keep_relay else ('connector', 'agent')
     started = []
     launched = {}
     def running(name):
@@ -199,13 +200,18 @@ def launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, s
         # can briefly show the Python executable without its script arguments.
         child = launched.get(name)
         return child.poll() is None if child is not None else alive(processes.get(name), scripts[name])
-    for name, command in commands.items():
+    for name in names:
+        if name == 'connector' and alive(processes.get(name), scripts[name]) and not connector_healthy(port, token):
+            print('检测到失效的 Codex 连接器，正在恢复…', flush=True)
+            stop_processes(processes, scripts, ['connector'])
+            save_processes(pid_path, processes)
+            recovered.append('connector')
         if not alive(processes.get(name), scripts[name]):
             if name == 'connector' and connector_healthy(port, token):
                 raise RuntimeError('端口已有未登记的连接器，请核对进程；本次没有终止其他进程。')
             with (logs / (name + '.log')).open('ab') as output:
                 os.chmod(output.name, 0o600)
-                child = subprocess.Popen(command, cwd=project, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                child = subprocess.Popen(commands[name], cwd=project, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                                          start_new_session=True, close_fds=True, env={**os.environ, 'PYTHONUNBUFFERED': '1'})
             processes[name] = child.pid
             launched[name] = child
@@ -234,15 +240,63 @@ def launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, s
             'started': started, 'recovered': recovered}
 
 
+def control_services(config_path, restart=False, stop=False, runtime_root=None, managed=False):
+    if sys.platform != 'darwin':
+        return start_services(config_path, restart=restart, stop=stop, runtime_root=runtime_root)
+    config, cfg = read_runtime_config(config_path)
+    runtime = Path(runtime_root or cfg.get('runtime_root') or cfg['project']).resolve(strict=True)
+    background = BackgroundService()
+    registered = background.configuration() == config
+    if not registered and not managed:
+        return start_services(config, restart=restart, stop=stop, runtime_root=runtime)
+    with background.locked():
+        registered = background.configuration() == config
+        if registered and (stop or restart):
+            background.disable()
+        if stop:
+            return start_services(config, stop=True, runtime_root=runtime)
+        if restart:
+            start_services(config, stop=True, runtime_root=runtime)
+        warning = None
+        try:
+            background.enable(config, runtime)
+        except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+            warning = str(error)
+        result = start_services(config, runtime_root=runtime, keep_relay=True)
+        return {**result, 'backgroundManaged': warning is None, 'backgroundWarning': warning}
+
+
+def supervise(config, runtime):
+    stopped = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stopped.set())
+    delay = 3
+    while not stopped.is_set():
+        try:
+            result = start_services(config, runtime_root=runtime, keep_relay=True)
+            if result['started']:
+                print('已恢复 AIRemote 进程 ' + ', '.join(result['started']), flush=True)
+            delay = 4
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            print(str(error), flush=True)
+            delay = min(delay * 2, 30)
+        stopped.wait(delay)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True)
     parser.add_argument('--stop', action='store_true')
     parser.add_argument('--restart', action='store_true')
+    parser.add_argument('--managed', action='store_true')
+    parser.add_argument('--supervise', action='store_true')
     parser.add_argument('--status', action='store_true', help='Read status without starting or stopping anything')
     parser.add_argument('--runtime-root', help='Code bundled with the application; configuration stays outside it')
     args = parser.parse_args()
-    result = service_status(args.config, args.runtime_root) if args.status else start_services(args.config, restart=args.restart, stop=args.stop, runtime_root=args.runtime_root)
+    if args.supervise:
+        return supervise(args.config, args.runtime_root)
+    result = service_status(args.config, args.runtime_root) if args.status else control_services(
+        args.config, restart=args.restart, stop=args.stop, runtime_root=args.runtime_root, managed=args.managed)
     print(json.dumps(result, ensure_ascii=False), flush=True)
 
 

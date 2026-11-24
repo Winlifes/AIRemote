@@ -1,4 +1,5 @@
 import base64
+import gzip
 import json
 from pathlib import Path
 import sqlite3
@@ -234,6 +235,50 @@ class LazyReadTests(unittest.TestCase):
         self.assertEqual(newest['messages'][0]['itemId'], 'appended')
         self.assertEqual(newest['turns'][0]['completed_at'], 9999)
         self.assertEqual(history.message_page(1, newest['olderCursor'])['messages'][0]['itemId'], 'item-119')
+
+    def test_fork_reads_frozen_ancestors_including_a_second_revert(self):
+        history = self.make_history()
+        sessions = self.root / 'sessions'
+        archives = self.root / 'archived_sessions'
+        archives.mkdir()
+        intermediate_id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+
+        def item(owner, identifier, client=None):
+            return {'type': 'item_completed', 'thread_id': owner, 'turn_id': identifier, 'item': {
+                'type': 'UserMessage', 'id': identifier, 'client_id': client,
+                'content': [{'type': 'text', 'text': identifier}]}}
+
+        def header(owner, base=None):
+            metadata = {'id': owner, 'history_mode': 'paginated'}
+            if base:
+                metadata['history_base'] = dict(zip(('thread_id', 'end_ordinal_exclusive', 'end_byte_offset'), base))
+            return json.dumps({'type': 'session_meta', 'payload': metadata}).encode() + b'\n'
+
+        root_prefix = header(OTHER) + self.rollout_event(item(OTHER, 'before-fork', 'parent-client'))
+        with gzip.open(archives / f'rollout-test-{OTHER}.jsonl.gz', 'wb') as out:
+            out.write(root_prefix + self.rollout_event(item(OTHER, 'after-fork')))
+        midpoint = header(THREAD, (OTHER, 2, len(root_prefix))) + self.rollout_event(item(THREAD, 'before-revert'))
+        path = self.write_rollout(history, [], base=118)
+        (sessions / f'rollout-test-{THREAD}_{intermediate_id}.jsonl').write_bytes(midpoint + self.rollout_event(item(THREAD, 'reverted')))
+        path.write_bytes(header(THREAD, (intermediate_id, 4, len(midpoint))) + self.rollout_event(item(THREAD, 'after-revert', 'child-client')))
+
+        page = history.message_page(2)
+        self.assertEqual([m['itemId'] for m in page['messages']], ['before-revert', 'after-revert'])
+        previous = history.message_page(2, page['olderCursor'])
+        self.assertEqual([m['itemId'] for m in previous['messages']], ['before-fork'])
+        self.assertEqual(previous['messages'][0]['threadId'], THREAD)
+        self.assertFalse(history.delivery_receipt('parent-client')['receivedInHistory'])
+        self.assertEqual(history.delivery_receipt('child-client')['userItemId'], 'after-revert')
+
+    def test_missing_fork_archive_keeps_current_messages(self):
+        history = self.make_history()
+        path = self.write_rollout(history, [{'type': 'item_completed', 'turn_id': 'latest', 'item': {
+            'type': 'AgentMessage', 'id': 'visible-leaf', 'text': 'after fork'}}], base=118)
+        header, tail = path.read_bytes().split(b'\n', 1)
+        data = json.loads(header)
+        data['payload']['history_base']['thread_id'] = OTHER
+        path.write_bytes(json.dumps(data).encode() + b'\n' + tail)
+        self.assertEqual(history.message_page(2)['messages'][-1]['itemId'], 'visible-leaf')
 
     def test_receipt_targets_one_client_message_without_loading_history(self):
         history = self.make_history()

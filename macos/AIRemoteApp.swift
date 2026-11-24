@@ -13,6 +13,7 @@ struct RuntimeStatus: Decodable {
     var running: [String: Int] = [:]
     var connectorHealthy = false
     var agentRunning = false
+    var backgroundManaged = false
     var relay = ""
     var providers: [ClientStatus] = []
     var logsDirectory: String?
@@ -75,6 +76,7 @@ private struct CodexLaunchConfiguration: Decodable {
     private var pendingUpdate: String?
     private var preparedUpdate: (version: String, config: URL, plan: String)?
     private var retryUpdateAfter = Date.distantPast
+    private let servicePausedKey = "ServiceWasStopped"
 
     deinit { refreshTimer?.invalidate() }
 
@@ -100,7 +102,7 @@ private struct CodexLaunchConfiguration: Decodable {
         guard !launched else { return }
         launched = true
         if autoCheck { checkUpdates(manual: false, announce: true) }
-        if ProcessInfo.processInfo.arguments.contains("--keep-services-stopped") { refresh() }
+        if ProcessInfo.processInfo.arguments.contains("--keep-services-stopped") || UserDefaults.standard.bool(forKey: servicePausedKey) { refresh() }
         else { run(action: nil) }
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
@@ -123,7 +125,9 @@ private struct CodexLaunchConfiguration: Decodable {
                 if !showConfigurationFailure(result, directory: directory) {
                     if result.0 == 0, let value = try? JSONDecoder().decode(RuntimeStatus.self, from: Data(result.1.utf8)) {
                         status = value
-                        if error == nil { message = value.ready ? "服务已运行" : "服务未启动" }
+                        if error == nil {
+                            message = value.ready ? "服务已运行" : value.agentRunning ? "中继在线，正在恢复本机连接器…" : "服务未启动"
+                        }
                     } else if error == nil {
                         message = "暂未取得服务状态"
                     }
@@ -143,7 +147,11 @@ private struct CodexLaunchConfiguration: Decodable {
             let result = await Self.execute(directory: directory, runtime: runtime, action: action)
             busy = false
             if result.0 == 0 {
+                UserDefaults.standard.set(action == "--stop", forKey: servicePausedKey)
                 message = action == "--stop" ? "服务已停止" : "服务已启动，可以从手机继续工作"
+                if let lastLine = result.1.split(separator: "\n").last,
+                   let reply = try? JSONSerialization.jsonObject(with: Data(lastLine.utf8)) as? [String: Any],
+                   let warning = reply["backgroundWarning"] as? String { error = warning }
             } else if !showConfigurationFailure(result, directory: directory) {
                 message = "操作未完成"
                 error = "当前配置目录\n\(directory.path)\n\n" + String(result.1.suffix(1200))
@@ -174,10 +182,29 @@ private struct CodexLaunchConfiguration: Decodable {
         guard FileManager.default.fileExists(atPath: chosen.appendingPathComponent(".local/mac-runtime.json").path) else {
             error = "这个文件夹中读不到 AIRemote 启动配置。\n\(chosen.path)"; return
         }
-        if chosen != project { status = RuntimeStatus() }
-        UserDefaults.standard.set(chosen.path, forKey: "ProjectDirectory")
-        error = nil
-        if configurationBlocked { run(action: nil) } else { refresh() }
+        let previous = project
+        guard chosen != previous else {
+            if configurationBlocked { run(action: nil) } else { refresh() }
+            return
+        }
+        busy = true
+        Task {
+            if !status.running.isEmpty || status.backgroundManaged {
+                let stopped = await Self.execute(directory: previous, runtime: runtime, action: "--stop")
+                if stopped.0 != 0 {
+                    error = Self.updateError(stopped.1)
+                    busy = false
+                    refresh()
+                    return
+                }
+            }
+            UserDefaults.standard.set(chosen.path, forKey: "ProjectDirectory")
+            status = RuntimeStatus()
+            configurationBlocked = false
+            error = nil; busy = false
+            if UserDefaults.standard.bool(forKey: servicePausedKey) { refresh() }
+            else { run(action: nil) }
+        }
     }
 
     func openWeb() {
@@ -209,7 +236,7 @@ private struct CodexLaunchConfiguration: Decodable {
             message = "配对未完成"
             return Self.updateError(result.1)
         }
-        if directory != previous.path && !status.running.isEmpty {
+        if directory != previous.path && (!status.running.isEmpty || status.backgroundManaged) {
             let stopped = await Self.execute(directory: previous, runtime: runtime, action: "--stop")
             if stopped.0 != 0 {
                 message = "配对成功，等待切换服务"
@@ -422,7 +449,7 @@ private struct CodexLaunchConfiguration: Decodable {
 
     nonisolated private static func execute(directory: URL, runtime: URL, action: String?) async -> (Int32, String) {
         await process([runtime.appendingPathComponent("deploy/start_mac.py").path, "--config", directory.appendingPathComponent(".local/mac-runtime.json").path,
-            "--runtime-root", runtime.path] + (action.map { [$0] } ?? []), timeout: action == "--status" ? 15 : 75)
+            "--runtime-root", runtime.path] + (action.map { [$0] } ?? ["--managed"]), timeout: action == "--status" ? 15 : 75)
     }
 
     nonisolated private static func process(_ arguments: [String], timeout: TimeInterval, input: Data? = nil) async -> (Int32, String) {
@@ -480,6 +507,9 @@ struct ControlView: View {
                     else { Circle().fill(model.status.ready ? Color.green : Color.gray.opacity(0.6)).frame(width: 8, height: 8) }
                     Text(model.message).font(.system(size: 13, weight: .medium))
                 }
+                if model.status.backgroundManaged {
+                    Text("登录后自动恢复连接").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
                 ForEach(model.status.providers) { client in
                     HStack(spacing: 9) {
                         if let url = Bundle.main.url(forResource: client.id, withExtension: "png"), let icon = NSImage(contentsOf: url) {
@@ -495,11 +525,11 @@ struct ControlView: View {
 
             HStack(spacing: 10) {
                 Button { model.run(action: nil) } label: {
-                    Label("启动服务", systemImage: "play.fill").frame(maxWidth: .infinity)
-                }.buttonStyle(.borderedProminent).disabled(model.busy || model.installingUpdate || model.status.ready)
+                    Label(model.status.ready && !model.status.backgroundManaged ? "启用后台恢复" : "启动服务", systemImage: "play.fill").frame(maxWidth: .infinity)
+                }.buttonStyle(.borderedProminent).disabled(model.busy || model.installingUpdate || (model.status.ready && model.status.backgroundManaged))
                 Button { model.run(action: "--stop") } label: {
                     Label("停止服务", systemImage: "stop.fill").frame(maxWidth: .infinity)
-                }.buttonStyle(.bordered).disabled(model.busy || model.installingUpdate || model.status.running.isEmpty)
+                }.buttonStyle(.bordered).disabled(model.busy || model.installingUpdate || (model.status.running.isEmpty && !model.status.backgroundManaged))
             }.controlSize(.large)
             HStack(spacing: 10) {
                 Button("打开手机网页") { model.openWeb() }.frame(maxWidth: .infinity)

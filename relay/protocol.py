@@ -10,6 +10,11 @@ CLAUDE = r'/api/providers/claude'
 CLAUDE_THREAD = CLAUDE + r'/threads/' + UUID
 MAX_BODY = 256 * 1024
 MAX_RESULT = 64 * 1024 * 1024
+PROVIDER_THREADS = {'codex': THREAD, 'claude': CLAUDE_THREAD, 'deepseek': DS_THREAD}
+
+
+def chat_watch_path(path):
+    return isinstance(path, str) and any(re.fullmatch(pattern, path) for pattern in PROVIDER_THREADS.values())
 
 
 def validate_request(value):

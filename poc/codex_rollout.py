@@ -3,13 +3,23 @@
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
+from contextlib import contextmanager
+import gzip
 import json
 import os
 from pathlib import Path
+import re
+import shutil
+import subprocess
 import threading
+import time
+import uuid
 
 
 MAX_RECORD = 16 * 1024 * 1024
+MAX_ANCESTORS = 32
+UUID = r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
+ROLLOUT_NAME = re.compile(rf'rollout-.*?-({UUID})(?:_({UUID}))?\.jsonl(?:\.(?:zst|gz))?$')
 MESSAGE_ROLES = {'UserMessage': 'user', 'userMessage': 'user',
                  'AgentMessage': 'assistant', 'agentMessage': 'assistant'}
 TURN_STATUSES = {'task_started': 'inProgress', 'turn_started': 'inProgress',
@@ -48,6 +58,162 @@ class RolloutTail:
     turns: dict
 
 
+@dataclass(frozen=True)
+class HistoryBase:
+    rollout_id: str
+    ordinal: int
+    offset: int
+
+
+def history_base(metadata):
+    base = metadata.get('history_base')
+    if base is None:
+        return None
+    if not isinstance(base, dict):
+        raise ValueError('Invalid Codex history reference')
+    ordinal, offset = base.get('end_ordinal_exclusive'), base.get('end_byte_offset')
+    if type(ordinal) is not int or ordinal < 1 or type(offset) is not int or offset < 1:
+        raise ValueError('Invalid Codex history boundary')
+    rollout_id = base.get('thread_id')
+    if not isinstance(rollout_id, str) or str(uuid.UUID(rollout_id)) != rollout_id:
+        raise ValueError('Invalid Codex rollout identifier')
+    return HistoryBase(rollout_id, ordinal, offset)
+
+
+def rollout_roots(home):
+    return tuple((Path(home) / name).resolve() for name in ('sessions', 'archived_sessions'))
+
+
+def managed_rollout(candidate, roots):
+    if not candidate:
+        return None
+    try:
+        path = Path(candidate).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if any(path.is_relative_to(root) for root in roots) and path.is_file() and path.name.endswith(('.jsonl', '.jsonl.zst', '.jsonl.gz')):
+        return path
+    return None
+
+
+def rollout_identity(path):
+    match = ROLLOUT_NAME.fullmatch(path.name)
+    if match:
+        owner, identifier = match.groups()
+        return owner, identifier or owner
+    return None, None
+
+
+@lru_cache(maxsize=128)
+def find_rollouts(roots, rollout_id, cache_period):
+    return tuple(path for root in roots for path in root.rglob(f'*{rollout_id}.jsonl*')
+                 if rollout_identity(path)[1] == rollout_id)
+
+
+def ancestor_candidates(roots, lookup, rollout_id):
+    current = managed_rollout(lookup(rollout_id), roots)
+    if current and rollout_identity(current)[1] == rollout_id:
+        yield current
+    for path in find_rollouts(roots, rollout_id, int(time.monotonic() // 30)):
+        if path != current:
+            yield path
+
+
+@contextmanager
+def open_rollout(path):
+    if path.suffix == '.gz':
+        with gzip.open(path, 'rb') as source:
+            yield source
+    elif path.suffix == '.zst':
+        try:
+            from compression import zstd  # Python 3.14+.
+        except ImportError:
+            zstd = None
+        if zstd is not None:
+            with zstd.open(path, 'rb') as source:
+                yield source
+            return
+        binary = shutil.which('zstd') or next((str(p) for p in (Path('/opt/homebrew/bin/zstd'), Path('/usr/local/bin/zstd'))
+                                               if p.is_file() and os.access(p, os.X_OK)), None)
+        if not binary:
+            raise FileNotFoundError('zstd is needed to read this archived Codex rollout')
+        with subprocess.Popen([binary, '-dc', '--', str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
+            try:
+                yield process.stdout
+            finally:
+                process.stdout.close()
+                if process.poll() is None:
+                    process.terminate()
+    else:
+        with path.open('rb') as source:
+            yield source
+
+
+def read_metadata(source, thread_id):
+    line = source.readline(MAX_RECORD)
+    if not line.endswith(b'\n'):
+        raise ValueError('Incomplete Codex rollout header')
+    session = json.loads(line)
+    metadata = session.get('payload') if isinstance(session, dict) and session.get('type') == 'session_meta' else None
+    if not isinstance(metadata, dict) or metadata.get('id') != thread_id:
+        raise ValueError('Codex rollout belongs to a different thread')
+    return line, metadata
+
+
+def inherited_history(roots, lookup, leaf_path, leaf_id, base):
+    """Open each ancestor at the exact bookmark recorded when the branch was made."""
+    parts, seen = [], {leaf_path}
+    while base is not None:
+        if len(parts) >= MAX_ANCESTORS:
+            raise ValueError('Codex history lineage is too deep')
+        for candidate in ancestor_candidates(roots, lookup, base.rollout_id):
+            path = managed_rollout(candidate, roots)
+            if not path or path in seen or rollout_identity(path)[1] != base.rollout_id:
+                continue
+            try:
+                stat = path.stat()
+                if path.suffix == '.jsonl' and stat.st_size < base.offset:
+                    continue
+                owner, _ = rollout_identity(path)
+                # Native rollouts append after a fork bookmark; that suffix is outside this view.
+                generation = (stat.st_dev, stat.st_ino, stat.st_mtime_ns if path.suffix != '.jsonl' else 0)
+                ancestor, part = read_ancestor(path, owner, base, generation)
+            except (OSError, ValueError, EOFError, LookupError):
+                continue
+            seen.add(path)
+            parts.append(part)
+            base = ancestor
+            break
+        else:
+            # Do not look up archived history by a similarly named session or title.
+            raise FileNotFoundError('Codex history source is not available')
+    messages, turns = {}, {}
+    for part in reversed(parts):
+        for message in part.messages:
+            messages[message['itemId']] = {**message, 'threadId': leaf_id, 'clientId': None}
+        for turn_id, turn in part.turns.items():
+            turns[turn_id] = {**turns.get(turn_id, {}), **turn}
+    return messages, turns
+
+
+@lru_cache(maxsize=16)
+def read_ancestor(path, owner, end, generation):
+    reader = RolloutReader(path, owner)
+    with open_rollout(path) as source:
+        header, metadata = read_metadata(source, owner)
+        base = history_base(metadata)
+        if metadata.get('history_mode', 'paginated') != 'paginated' or metadata.get('attached_thread'):
+            raise ValueError('Invalid ancestor for visible Codex history')
+        reader.ordinal = base.ordinal + 1 if base else 1
+        reader.offset = len(header)
+        if reader.offset > end.offset or reader.ordinal >= end.ordinal:
+            raise ValueError('Codex history boundary precedes its source')
+        reader._read(source, end.offset, end.ordinal)
+        if reader.offset != end.offset:
+            raise ValueError('Codex history boundary is outside a complete record')
+        return base, RolloutTail(0, tuple(reader.messages.values()), reader.turns)
+
+
 @lru_cache(maxsize=8)
 def rollout_reader(path, thread_id):
     return RolloutReader(path, thread_id)
@@ -66,31 +232,30 @@ class RolloutReader:
         self.turns = {}
 
     def tail(self, checkpoint):
+        if self.path.suffix != '.jsonl':
+            with open_rollout(self.path) as source:
+                _, metadata = read_metadata(source, self.thread_id)
+                base = history_base(metadata)
+                reader = RolloutReader(self.path, self.thread_id)
+                reader.ordinal = base.ordinal + 1 if base else 1
+                reader._read(source)
+                return metadata, RolloutTail(base.ordinal if base else 0, tuple(reader.messages.values()), reader.turns)
         with self.lock, self.path.open('rb') as source:
             stat = os.fstat(source.fileno())
-            header = source.readline(MAX_RECORD)
-            if not header.endswith(b'\n'):
-                return None
-            session = json.loads(header)
-            if not isinstance(session, dict) or session.get('type') != 'session_meta':
-                return None
-            metadata = session.get('payload')
-            if not isinstance(metadata, dict) or metadata.get('id') != self.thread_id:
-                return None
-            base = metadata.get('history_base')
+            header, metadata = read_metadata(source, self.thread_id)
+            base = history_base(metadata)
             if base is not None:
-                # Compacted rollouts replace everything from this ordinal onward.
-                if not isinstance(base, dict) or base.get('thread_id') != self.thread_id:
-                    return None
-                start, cutoff = 0, base.get('end_ordinal_exclusive')
+                start, cutoff = 0, base.ordinal
             elif checkpoint is not None:
                 start, cutoff = checkpoint
+            elif metadata.get('history_mode') == 'paginated':
+                start, cutoff = 0, 0
             else:
                 return None
             if (type(cutoff) is not int or cutoff < 0 or type(start) is not int or
                     not 0 <= start <= stat.st_size):
                 return None
-            generation = (stat.st_dev, stat.st_ino, start, cutoff, header[:128])
+            generation = (stat.st_dev, stat.st_ino, start, cutoff, header)
             if not self._same_rollout(source, stat.st_size, generation):
                 self.generation = generation
                 self.offset = start
@@ -98,25 +263,38 @@ class RolloutReader:
                 self.messages.clear()
                 self.turns.clear()
             source.seek(self.offset)
-            while source.tell() < stat.st_size:
-                line = source.readline(MAX_RECORD)
-                if not line.endswith(b'\n'):
-                    if len(line) < MAX_RECORD:
-                        break  # The writer has not committed this JSONL record yet.
-                    while line and not line.endswith(b'\n'):
-                        line = source.readline(MAX_RECORD)
-                    if not line:
-                        break
-                else:
-                    try:
-                        self._event(json.loads(line))
-                    except (ValueError, UnicodeError):
-                        pass
-                self.offset = source.tell()
-                self.ordinal += 1
+            self._read(source, stat.st_size)
             source.seek(max(0, self.offset - 128))
             self.anchor = source.read(min(128, self.offset))
-            return RolloutTail(cutoff, tuple(self.messages.values()), dict(self.turns))
+            return metadata, RolloutTail(cutoff, tuple(self.messages.values()), dict(self.turns))
+
+    def _read(self, source, end=None, end_ordinal=None):
+        while end is None or self.offset < end:
+            maximum = MAX_RECORD if end is None else min(MAX_RECORD, end - self.offset)
+            line = source.readline(maximum)
+            length = len(line)
+            if not line.endswith(b'\n'):
+                if length < MAX_RECORD:
+                    break  # Ignore an incomplete record at the end of a file or bookmark.
+                while line and not line.endswith(b'\n') and (end is None or self.offset + length < end):
+                    maximum = MAX_RECORD if end is None else min(MAX_RECORD, end - self.offset - length)
+                    line = source.readline(maximum)
+                    length += len(line)
+                if not line.endswith(b'\n'):
+                    break
+            else:
+                try:
+                    row = json.loads(line)
+                    ordinal = row.get('ordinal') if isinstance(row, dict) else None
+                    if type(ordinal) is int:
+                        self.ordinal = max(self.ordinal, ordinal)
+                    if end_ordinal is not None and self.ordinal >= end_ordinal:
+                        raise LookupError('Codex history boundary does not match its ordinal')
+                    self._event(row)
+                except (ValueError, UnicodeError):
+                    pass
+            self.offset += length
+            self.ordinal += 1
 
     def _same_rollout(self, source, size, generation):
         if self.generation != generation or self.offset > size:
