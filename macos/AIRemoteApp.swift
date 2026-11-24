@@ -13,6 +13,7 @@ struct RuntimeStatus: Decodable {
     var running: [String: Int] = [:]
     var connectorHealthy = false
     var agentRunning = false
+    var backgroundRegistered = false
     var backgroundManaged = false
     var relay = ""
     var providers: [ClientStatus] = []
@@ -189,7 +190,7 @@ private struct CodexLaunchConfiguration: Decodable {
         }
         busy = true
         Task {
-            if !status.running.isEmpty || status.backgroundManaged {
+            if !status.running.isEmpty || status.backgroundRegistered {
                 let stopped = await Self.execute(directory: previous, runtime: runtime, action: "--stop")
                 if stopped.0 != 0 {
                     error = Self.updateError(stopped.1)
@@ -236,7 +237,7 @@ private struct CodexLaunchConfiguration: Decodable {
             message = "配对未完成"
             return Self.updateError(result.1)
         }
-        if directory != previous.path && (!status.running.isEmpty || status.backgroundManaged) {
+        if directory != previous.path && (!status.running.isEmpty || status.backgroundRegistered) {
             let stopped = await Self.execute(directory: previous, runtime: runtime, action: "--stop")
             if stopped.0 != 0 {
                 message = "配对成功，等待切换服务"
@@ -509,6 +510,9 @@ struct ControlView: View {
                 }
                 if model.status.backgroundManaged {
                     Text("登录后自动恢复连接").font(.system(size: 11)).foregroundStyle(.secondary)
+                } else if model.status.backgroundRegistered && !model.busy && model.error == nil {
+                    Text("后台恢复尚未就绪。可在系统设置中检查 AIRemote 的登录项与文件夹权限。")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 ForEach(model.status.providers) { client in
                     HStack(spacing: 9) {
@@ -529,7 +533,7 @@ struct ControlView: View {
                 }.buttonStyle(.borderedProminent).disabled(model.busy || model.installingUpdate || (model.status.ready && model.status.backgroundManaged))
                 Button { model.run(action: "--stop") } label: {
                     Label("停止服务", systemImage: "stop.fill").frame(maxWidth: .infinity)
-                }.buttonStyle(.bordered).disabled(model.busy || model.installingUpdate || (model.status.running.isEmpty && !model.status.backgroundManaged))
+                }.buttonStyle(.bordered).disabled(model.busy || model.installingUpdate || (model.status.running.isEmpty && !model.status.backgroundRegistered))
             }.controlSize(.large)
             HStack(spacing: 10) {
                 Button("打开手机网页") { model.openWeb() }.frame(maxWidth: .infinity)
@@ -692,7 +696,36 @@ private struct MenuBarActions: View {
     }
 }
 
-@main struct AIRemoteApplication: App {
+@main enum AIRemoteMain {
+    @MainActor static func main() {
+        let arguments = CommandLine.arguments
+        guard arguments.dropFirst().first == "--background-supervisor" else {
+            AIRemoteApplication.main()
+            return
+        }
+        guard arguments.count == 4, arguments[2] == "--config", arguments[3].hasPrefix("/"),
+              let resources = Bundle.main.resourceURL else { exit(EX_USAGE) }
+        let runtime = resources.appendingPathComponent("runtime")
+        let worker = Process()
+        worker.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        worker.arguments = [runtime.appendingPathComponent("deploy/start_mac.py").path, "--supervise", "--config",
+                            arguments[3], "--runtime-root", runtime.path, "--supervisor-pid",
+                            String(ProcessInfo.processInfo.processIdentifier)]
+        worker.standardInput = FileHandle.nullDevice
+        worker.standardOutput = FileHandle.standardOutput
+        worker.standardError = FileHandle.standardError
+        do {
+            try worker.run()
+            worker.waitUntilExit()
+            exit(worker.terminationStatus)
+        } catch {
+            FileHandle.standardError.write(Data("AIRemote 无法启动后台管理进程：\(error)\n".utf8))
+            exit(EX_UNAVAILABLE)
+        }
+    }
+}
+
+struct AIRemoteApplication: App {
     @StateObject private var model = ServiceModel()
 
     private static let menuBarIcon: NSImage = {

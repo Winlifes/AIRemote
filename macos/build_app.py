@@ -72,7 +72,8 @@ def main():
     info = {'CFBundleIdentifier': 'fun.winlife.airemote', 'CFBundleName': 'AIRemote', 'CFBundleDisplayName': 'AIRemote',
         'CFBundleExecutable': 'AIRemote', 'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': version,
         'CFBundleVersion': version, 'CFBundleIconFile': 'AIRemote.icns', 'LSMinimumSystemVersion': '13.0',
-        'NSHighResolutionCapable': True, 'NSDocumentsFolderUsageDescription': 'AIRemote 需要访问已授权的 AI 项目、配置和产物。'}
+        'NSHighResolutionCapable': True, 'AIRemoteBackgroundSupervisor': True,
+        'NSDocumentsFolderUsageDescription': 'AIRemote 需要访问已授权的 AI 项目、配置和产物。'}
     (staging / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
     run('/usr/bin/codesign', '--force', '--sign', '-', str(staging))
     run('/usr/bin/codesign', '--verify', '--deep', '--strict', str(staging))

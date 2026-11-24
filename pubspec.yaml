@@ -1,7 +1,7 @@
 name: airemote_mobile
 description: Native Flutter client for self-hosted AIRemote.
 publish_to: none
-version: 0.10.12+10012
+version: 0.10.13+10013
 environment:
   sdk: '>=3.11.0 <4.0.0'
 dependencies:

@@ -170,9 +170,11 @@ def service_status(config_path, runtime_root=None):
         except (OSError, ValueError):
             pass
     background = BackgroundService() if sys.platform == 'darwin' else None
-    managed = bool(background and background.configuration() == config_path and background.loaded())
-    return {'running': running, 'connectorHealthy': healthy, 'agentRunning': 'agent' in running, 'backgroundManaged': managed,
-            'relay': cfg['relay_url'], 'providers': providers, 'logsDirectory': str(config_path.parent / 'logs')}
+    registered = bool(background and background.configuration() == config_path)
+    managed = registered and background.ready()
+    return {'running': running, 'connectorHealthy': healthy, 'agentRunning': 'agent' in running,
+            'backgroundRegistered': registered, 'backgroundManaged': managed, 'relay': cfg['relay_url'],
+            'providers': providers, 'logsDirectory': str(config_path.parent / 'logs')}
 
 
 def launch_locked(cfg, project, scripts, logs, pid_path, port, token, restart, stop, startup_timeout, keep_relay=False):
@@ -263,21 +265,29 @@ def control_services(config_path, restart=False, stop=False, runtime_root=None, 
         except (OSError, subprocess.SubprocessError, RuntimeError) as error:
             warning = str(error)
         result = start_services(config, runtime_root=runtime, keep_relay=True)
-        return {**result, 'backgroundManaged': warning is None, 'backgroundWarning': warning}
+        return {**result, 'backgroundManaged': background.ready() if warning is None else False, 'backgroundWarning': warning}
 
 
-def supervise(config, runtime):
+def supervise(config, runtime, pid):
     stopped = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stopped.set())
+    background = BackgroundService()
+    ready = False
     delay = 3
     while not stopped.is_set():
         try:
             result = start_services(config, runtime_root=runtime, keep_relay=True)
+            if not ready and not stopped.is_set():
+                background.mark_ready(pid)
+                ready = True
             if result['started']:
                 print('已恢复 AIRemote 进程 ' + ', '.join(result['started']), flush=True)
             delay = 4
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            if ready and isinstance(error, (ConfigUnavailable, PermissionError)):
+                background.ready_file.unlink(missing_ok=True)
+                ready = False
             print(str(error), flush=True)
             delay = min(delay * 2, 30)
         stopped.wait(delay)
@@ -290,11 +300,12 @@ def main():
     parser.add_argument('--restart', action='store_true')
     parser.add_argument('--managed', action='store_true')
     parser.add_argument('--supervise', action='store_true')
+    parser.add_argument('--supervisor-pid', type=int, help=argparse.SUPPRESS)
     parser.add_argument('--status', action='store_true', help='Read status without starting or stopping anything')
     parser.add_argument('--runtime-root', help='Code bundled with the application; configuration stays outside it')
     args = parser.parse_args()
     if args.supervise:
-        return supervise(args.config, args.runtime_root)
+        return supervise(args.config, args.runtime_root, args.supervisor_pid or os.getpid())
     result = service_status(args.config, args.runtime_root) if args.status else control_services(
         args.config, restart=args.restart, stop=args.stop, runtime_root=args.runtime_root, managed=args.managed)
     print(json.dumps(result, ensure_ascii=False), flush=True)
