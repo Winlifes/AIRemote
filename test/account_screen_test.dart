@@ -47,7 +47,14 @@ Future<void> loadApp(WidgetTester tester, Workspace state) async {
 }
 
 Future<void> openAccount(WidgetTester tester) async {
-  await tester.tap(find.byTooltip('应用设置与更新'));
+  final chatActions = find.byTooltip('对话选项');
+  if (chatActions.evaluate().isEmpty) {
+    await tester.tap(find.byTooltip('应用设置与更新'));
+  } else {
+    await tester.tap(chatActions);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('应用设置与更新'));
+  }
   await tester.pumpAndSettle();
   await tester.tap(find.text('账号与设备'));
   await tester.pumpAndSettle();
@@ -126,7 +133,7 @@ void main() {
       expect(find.text('工作电脑'), findsNothing);
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
-      expect(find.byTooltip('应用设置与更新'), findsOneWidget);
+      expect(find.byTooltip('对话选项'), findsOneWidget);
       expect(state.selected, 'a');
       expect(state.draft, '保留的草稿');
       await tester.pumpWidget(const SizedBox.shrink());

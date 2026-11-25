@@ -8,13 +8,16 @@ import 'app.dart';
 
 class ComposerDock extends StatefulWidget {
   final Workspace state;
-  final VoidCallback files, newChat;
+  final VoidCallback files, newChat, onSent;
+  final FocusNode focus;
   final bool keyboardVisible;
   const ComposerDock({
     super.key,
     required this.state,
     required this.files,
     required this.newChat,
+    required this.onSent,
+    required this.focus,
     this.keyboardVisible = false,
   });
   @override
@@ -22,7 +25,8 @@ class ComposerDock extends StatefulWidget {
 }
 
 class _ComposerDockState extends State<ComposerDock> {
-  final input = TextEditingController(), focus = FocusNode();
+  final input = TextEditingController();
+  FocusNode get focus => widget.focus;
   bool menuOpen = false;
   int focusRevision = 0;
   @override
@@ -61,7 +65,6 @@ class _ComposerDockState extends State<ComposerDock> {
   @override
   void dispose() {
     focus.removeListener(_focusChanged);
-    focus.dispose();
     input.dispose();
     super.dispose();
   }
@@ -381,7 +384,11 @@ class _ComposerDockState extends State<ComposerDock> {
     onPressed: !state.canSendDraft || state.draft.trim().isEmpty
         ? null
         : () async {
-            await state.send();
+            final id = state.draftKey, mode = state.effectiveSendMode;
+            final sent = await state.send();
+            if (mounted && sent && mode == 'send' && id == state.draftKey) {
+              widget.onSent();
+            }
           },
     icon: state.busy
         ? const SizedBox.square(

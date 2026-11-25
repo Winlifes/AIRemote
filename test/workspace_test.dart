@@ -285,7 +285,13 @@ void main() {
       expect(w.hasOlder, false);
       await w.refreshChat();
       expect(w.messages.first['itemId'], 'm0');
+      expect(w.messages.last['itemId'], 'm79');
+      expect(w.hasNewMessages, true);
+      w.setFollowingLatest(true);
+      expect(w.messages.first['itemId'], 'm0');
       expect(w.messages.last['itemId'], 'm81');
+      expect(w.hasOlder, false);
+      w.setFollowingLatest(false);
       api.respond = (c) => c.path.contains('/messages?')
           ? page(100, 139)
           : FakeApi.defaultResponse(c);
@@ -295,6 +301,33 @@ void main() {
       w.jumpLatest();
       expect(w.messages.first['itemId'], 'm100');
       expect(w.olderCursor, 'before-100');
+    },
+  );
+  test(
+    'reading history ignores identical pages and buffers same-item edits',
+    () async {
+      final api = FakeApi();
+      final w = Workspace(api);
+      addTearDown(w.dispose);
+      await w.start();
+      api.respond = (call) => call.path.contains('/messages?')
+          ? page(0, 12)
+          : FakeApi.defaultResponse(call);
+      await w.select('a');
+      w.setFollowingLatest(false);
+      await w.refreshChat();
+      expect(w.hasNewMessages, false);
+      final edited = page(0, 12);
+      (edited['messages'] as List).last = message(12, text: '回复已更新');
+      api.respond = (call) => call.path.contains('/messages?')
+          ? edited
+          : FakeApi.defaultResponse(call);
+      await w.refreshChat();
+      expect(w.hasNewMessages, true);
+      expect(w.messages.last['text'], '消息 12');
+      w.setFollowingLatest(true);
+      expect(w.hasNewMessages, false);
+      expect(w.messages.last['text'], '回复已更新');
     },
   );
   test(

@@ -140,29 +140,18 @@ jobs:
           cd dist
           sha256sum AIRemote-android.apk AIRemote-macos.zip AIRemote-windows.zip AIRemote-server.tar.gz ANDROID-SIGNING.txt > SHA256SUMS
           cat > release-notes.md <<'NOTES'
-          手机查看和继续 Mac 上的 Codex、DeepSeek Harness 和 Claude Code 对话。
+          ## 手机端对话页
 
-          - Codex 手动分叉和回退后的对话可向上翻到继承的历史，分叉之后父对话新增的消息留在原会话。
-          - macOS 登录后自动恢复 AIRemote 连接。连接器退出时系统会重新拉起，点击「停止服务」会取消恢复。配置保存在「文稿」等受保护目录时，后台服务沿用 AIRemote 已有的相应文件夹权限。
-          - 网页和手机 App 重连时会补收遗漏的对话和设备更新提示，并按需重新获取最新消息。
-          - Android 冷启动会自动检查稳定版。发现新版时弹窗提供「稍后」和「下载更新」，并显示下载进度和安装步骤。
-          - 手机 App 内可查看账号和设备状态、生成配对码、解绑电脑和使用邀请码注册。管理员可在 App 内生成或撤销邀请、启用或停用账号、管理绑定设备。
-          - 同一站点可邀请多个账号，各账号可配对多台电脑。项目和对话按 AI 客户端汇总，实际操作路由到原设备。
-          - Windows：解压 AIRemote-windows.zip，安装 Python 3.11+（含 Launcher 和 Tcl/Tk），双击 AIRemote.cmd。当前支持配对、读取授权项目中的 Codex 会话和下载关联文件。
-          - Mac 关闭窗口后收至顶部菜单栏，后台连接继续运行。点击菜单栏图标可查看状态、重新打开窗口或退出应用。
-          - Mac 启动时自动使用保存的配置目录。配置缺失或权限受限时，窗口显示实际尝试读取的位置，并提供“配置文件夹…”入口。
-          - Mac 启动后检查更新，发现新版时弹窗提示。网页、Flutter 和 Mac 管理窗口内置 Claude Desktop 的应用图标。
-          - Claude Code 本地会话：配置 CLI API 凭据后，可续聊原会话或新建。由 AIRemote 执行的会话支持待执行队列、停止、下一轮模型与计划模式设置，以及读取和控制原生 `/goal`。已关闭的会话显示为空闲，桌面仍打开的会话可只读查看。
-          - Android：Flutter 跨平台客户端，界面直接由 Flutter 渲染，已移除 WebView 页面。保留原包名和长期签名，可覆盖升级（Android 8+）；首次填写自己的 HTTPS 中继地址。iOS 工程使用同一套 Dart 界面，已加入模拟器构建验证。
-          - Mac：解压 AIRemote-macos.zip，将应用放入 /Applications 或 ~/Applications。Intel / Apple Silicon 通用；支持 GitHub 更新并保留私有配置。此构建采用 ad-hoc 签名，尚未经过 Apple 公证。
-          - 自托管服务端：AIRemote-server.tar.gz，包含构建好的网页。可选启用六小时稳定版自动更新，健康检查失败会回退。
-          - 手机侧栏和遮罩铺满屏幕；目标状态条直接附在输入框上方，可修改、暂停/继续和关闭。模型、工作模式和原生队列继续读取同一桌面对话。
-          - 目标栏使用更轻的附加栏样式，突出目标内容，状态与耗时合并显示；快捷暂停/继续，详情、修改和关闭收进“更多”，关闭前保留确认。
-          - 输入框聚焦/失焦时连续变形并跟随键盘，使用同一输入控件保留草稿、光标和中文输入状态；已移除普通输入框的工作提示文字。
-          - Mac / Android 更新下载持续显示进度、已下载大小和速率，校验、解压、安装阶段分别提示。
-          - 支持新版 Codex 26.1117.31558。Mac AIRemote 可通过「通过连接通道启动 Codex」接入原桌面 App Server，继续已有对话和管理目标。兼容性根据实际接口响应判断，已移除桌面版本白名单。
-          - 手机发送指令时，Codex 会在原桌面 App Server 按原 ID 加载已有对话。升级后通过 Mac AIRemote 重新启动一次 Codex，即可从手机直接续聊。
+          - 标题、项目和运行状态收进紧凑的顶部栏。文件可以一键打开，刷新和目标管理可从「对话选项」进入。
+          - 同一轮的进度消息收进「执行过程」，点开可以查看原文。回复底部显示处理时长。
+          - 向上翻历史时保留阅读位置。有新回复或已有回复更新时，可以点击「有更新 · 回到最新」查看。
+          - 代码块支持横向滑动和单独复制。旧指令可放回输入框，已有草稿会保留。
+          - App 和手机网页使用相同的对话操作。短对话从顶部开始，长对话打开时定位到最新消息。
 
-          安装、配置、签名密钥与自动发布说明见仓库 README。SHA256SUMS 为下载校验，ANDROID-SIGNING.txt 为 APK 签名验证结果。安装包不包含个人账号、服务器凭据或聊天记录。
+          ## 安装与升级
+
+          - Android 下载 **AIRemote-android.apk**。APK 沿用正式发布签名，可以覆盖安装。
+          - Mac 和 Windows 下载对应的压缩包。安装与自托管服务端升级说明见仓库的 README。
+          - **SHA256SUMS** 可校验各下载文件，**ANDROID-SIGNING.txt** 记录 APK 签名验证结果。
           NOTES
           gh release create "$GITHUB_REF_NAME" --verify-tag --latest --title "AIRemote $GITHUB_REF_NAME" --notes-file release-notes.md AIRemote-android.apk AIRemote-macos.zip AIRemote-windows.zip AIRemote-server.tar.gz ANDROID-SIGNING.txt SHA256SUMS

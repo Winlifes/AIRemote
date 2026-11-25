@@ -11,6 +11,7 @@ import 'package:airemote_mobile/core/platform.dart';
 import 'package:airemote_mobile/core/updates.dart';
 import 'package:airemote_mobile/core/workspace.dart';
 import 'package:airemote_mobile/ui/app.dart';
+import 'package:airemote_mobile/ui/chat_transcript.dart';
 import 'package:airemote_mobile/ui/composer.dart';
 import 'support.dart';
 
@@ -303,6 +304,156 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+  testWidgets(
+    'transcript groups progress and supports copying code and reusing a prompt',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      tester.view.viewPadding = const FakeViewPadding(top: 31, bottom: 24);
+      tester.view.padding = tester.view.viewPadding;
+      addTearDown(tester.view.reset);
+      const prompt = '整理手机端对话页，给出验证命令。';
+      const code = 'git diff --check\nflutter test test/ui_test.dart';
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final state = demoWorkspace()
+        ..threads = {'a': thread('a', status: 'idle', goal: demoGoal())}
+        ..messages = [
+          {
+            ...message(1, role: 'user', text: prompt),
+            'createdAtMs': now - 120000,
+          },
+          {
+            ...message(2, text: '先定位滚动入口。'),
+            'phase': 'commentary',
+            'createdAtMs': now - 110000,
+          },
+          {
+            ...message(3, text: '复核代码块宽度和触控区域。'),
+            'phase': 'commentary',
+            'createdAtMs': now - 80000,
+          },
+          {
+            ...message(4, text: '布局已调整。用下面的命令重新验证。\n\n```bash\n$code\n```'),
+            'createdAtMs': now - 55000,
+          },
+        ];
+      addTearDown(state.dispose);
+      String? clipboard;
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') {
+          clipboard = (call.arguments as Map)['text'] as String;
+        }
+        return null;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+      await tester.pumpWidget(
+        RepaintBoundary(
+          key: const Key('qa-frame'),
+          child: AIRemoteApp(
+            workspace: state,
+            updater: null,
+            native: NativePlatform(),
+            connect: (_) async {},
+            changeServer: () {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('执行过程'), findsOneWidget);
+      expect(find.text('2 条'), findsOneWidget);
+      expect(find.textContaining('定位滚动入口'), findsNothing);
+      expect(find.text('bash'), findsOneWidget);
+      expect(find.text('复制代码'), findsOneWidget);
+      final titleBottom = tester.getBottomLeft(find.text('设计桌面 AI 对话监控产品')).dy;
+      expect(
+        tester.getTopLeft(find.text(prompt)).dy,
+        lessThan(titleBottom + 100),
+      );
+      await renderEvidence(tester, 'chat-transcript-native');
+
+      await tester.tap(find.text('复制代码'));
+      await tester.pump();
+      expect(clipboard, code);
+      expect(find.text('已复制'), findsOneWidget);
+      await tester.tap(find.text('执行过程'));
+      await tester.pumpAndSettle();
+      expect(find.text('执行过程 · 2 条'), findsOneWidget);
+      expect(find.textContaining('定位滚动入口'), findsOneWidget);
+      await renderEvidence(tester, 'chat-progress-native');
+      await tester.tap(find.byTooltip('关闭执行过程'));
+      await tester.pumpAndSettle();
+
+      state.setDraft('先保留现有草稿。');
+      await tester.pump();
+      await tester.tap(find.byTooltip('放入输入框'));
+      await tester.pumpAndSettle();
+      expect(state.draft, '先保留现有草稿。\n\n$prompt');
+      final field = tester.widget<EditableText>(find.byType(EditableText).last);
+      expect(field.focusNode.hasFocus, true);
+      expect(
+        (state.api as FakeApi).calls.where((call) => call.method != 'GET'),
+        isEmpty,
+      );
+    },
+  );
+
+  testWidgets(
+    'incoming updates keep the history scroll position until latest is selected',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final state = demoWorkspace()
+        ..messages = objects(page(0, 25)['messages']);
+      addTearDown(state.dispose);
+      var recent = page(0, 25);
+      (state.api as FakeApi).respond = (call) =>
+          call.path.contains('/messages?')
+          ? recent
+          : FakeApi.defaultResponse(call);
+      await tester.pumpWidget(
+        AIRemoteApp(
+          workspace: state,
+          updater: null,
+          native: NativePlatform(),
+          connect: (_) async {},
+          changeServer: () {},
+        ),
+      );
+      await tester.pumpAndSettle();
+      final transcript = find.byType(ChatTranscript);
+      final list = find
+          .descendant(of: transcript, matching: find.byType(Scrollable))
+          .first;
+      await tester.drag(list, const Offset(0, 320));
+      await tester.pumpAndSettle();
+      final position = tester.state<ScrollableState>(list).position;
+      final readingOffset = position.pixels;
+      expect(readingOffset, greaterThan(72));
+      expect(find.text('回到最新'), findsOneWidget);
+
+      await state.refreshChat();
+      await tester.pump();
+      expect(find.text('有更新 · 回到最新'), findsNothing);
+      recent = {
+        ...page(0, 25),
+        'messages': [...state.messages, message(26, text: '收到一条新回复')],
+      };
+      await state.refreshChat();
+      await tester.pumpAndSettle();
+      expect(position.pixels, closeTo(readingOffset, 1));
+      expect(find.text('有更新 · 回到最新'), findsOneWidget);
+      expect(find.text('收到一条新回复'), findsNothing);
+      await tester.tap(find.text('有更新 · 回到最新'));
+      await tester.pumpAndSettle();
+      expect(position.pixels, closeTo(0, 1));
+      expect(find.text('收到一条新回复'), findsOneWidget);
+    },
+  );
+
   testWidgets('keyboard resizes chat without duplicating bottom safe padding', (
     tester,
   ) async {
@@ -425,7 +576,13 @@ void main() {
           ),
         ),
       );
-      await tester.tap(find.byTooltip('应用设置与更新'));
+      Future<void> openSettings() async {
+        await tester.tap(find.byTooltip('对话选项'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('应用设置与更新'));
+      }
+
+      await openSettings();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.text('正在下载更新 · 50%'), findsOneWidget);
@@ -446,7 +603,7 @@ void main() {
       updater.downloaded = 20000000;
       updater.changed();
       await tester.pump();
-      await tester.tap(find.byTooltip('应用设置与更新'));
+      await openSettings();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.text('正在下载更新…'), findsOneWidget);

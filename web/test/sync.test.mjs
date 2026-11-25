@@ -6,7 +6,7 @@ import ts from 'typescript';
 const source = ts.transpileModule(readFileSync(new URL('../src/sync.ts', import.meta.url), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText;
-const { ConversationReader, mergeLatestPage, mergeTurns, visibleMessages } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+const { ConversationReader, groupProgress, mergeLatestPage, mergeTurns, sameTranscript, visibleMessages } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const message = (i, extra = {}) => ({ itemId: `m${i}`, turnId: 't', threadId: 'A', ordinal: i, text: `text${i}`, role: 'assistant', ...extra });
@@ -57,6 +57,21 @@ test('current turn progress stays visible when older progress is collapsed', () 
   const messages = [message(1, { phase: 'commentary', turnId: 'old' }), message(2, { phase: 'commentary', turnId: 'active' }), message(3, { phase: 'final_answer' })];
   assert.deepEqual(visibleMessages(messages, false, 'active').map(m => m.itemId), ['m2', 'm3']);
   assert.equal(visibleMessages(messages, true).length, 3);
+});
+
+test('progress cards group only adjacent commentary from the same turn', () => {
+  const progress = (i, turnId) => message(i, { phase: 'commentary', turnId });
+  const history = [progress(1, 'a'), progress(2, 'a'), progress(3, 'b'),
+    message(4, { role: 'user', turnId: 'b' }), progress(5, 'b'), message(6)];
+  assert.deepEqual(groupProgress(history).map(group => group.map(item => item.itemId)),
+    [['m1', 'm2'], ['m3'], ['m4'], ['m5'], ['m6']]);
+});
+
+test('a repeated page has no notification but replacing streamed text does', () => {
+  const initial = [message(1), message(2)];
+  assert.equal(sameTranscript(initial, [message(1), message(2)]), true);
+  assert.equal(sameTranscript(initial, [message(1), message(2, { text: 'finished' })]), false);
+  assert.equal(sameTranscript(initial, [message(1)]), false);
 });
 test('an older page cannot change a completed turn back to in progress', () => {
   const turns = mergeTurns([{ turn_id: 't', status: 'completed', started_at: 10, completed_at: 20 }], [{ turn_id: 't', status: 'inProgress', started_at: 10, completed_at: null }]);

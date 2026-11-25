@@ -62,6 +62,29 @@ export function mergeLatestPage(existing: Message[], page: MessagePage) {
   return { messages: [...prefix, ...incoming], reset: false };
 }
 
+export function sameTranscript(previous: Message[], next: Message[]) {
+  return previous.length === next.length && previous.every((message, index) => {
+    const other = next[index];
+    return message.itemId === other.itemId && message.turnId === other.turnId &&
+      message.ordinal === other.ordinal && message.role === other.role &&
+      message.phase === other.phase && message.text === other.text && message.createdAtMs === other.createdAtMs;
+  });
+}
+
+export const isProgress = (message: Message) => message.role === 'assistant' && message.phase === 'commentary';
+export function groupProgress(messages: Message[]) {
+  const groups: Message[][] = [];
+  for (const message of messages) {
+    const group = groups.at(-1), previous = group?.at(-1);
+    if (group && previous && isProgress(previous) && isProgress(message) && previous.turnId === message.turnId) {
+      group.push(message);
+    } else {
+      groups.push([message]);
+    }
+  }
+  return groups;
+}
+
 export function visibleMessages(messages: Message[], expanded: boolean, activeTurnId?: string) {
   return messages.filter(message => expanded || message.phase !== 'commentary' || message.turnId === activeTurnId);
 }

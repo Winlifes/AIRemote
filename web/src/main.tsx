@@ -5,7 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Activity, ArrowDown, ArrowLeft, ArrowUp, ArrowUpRight, Check, CheckCheck, ChevronDown, ChevronRight, Clock3, Code2, Copy, CornerDownRight, CornerUpRight, Download, File, FileText, Folder, Inbox, ListOrdered, LoaderCircle, LogOut, Menu, MessageSquare, Monitor, MoreHorizontal, Pencil, Plus, Radio, RefreshCw, Search, Send, ShieldCheck, SlidersHorizontal, Sparkles, Square, Target, Terminal, Trash2, WifiOff, X } from 'lucide-react';
 import { api, APIError, Artifact, bridge as remoteBridge, bridgeResponse as remoteBridgeResponse, Device, forgetSession, login, logout, register, type RelaySession, Message, MessagePage, Project, Provider, ProviderId, providerPath, QueueItem, queueText, Receipt, runtime, session, Thread, modelPresentation, type ClaudeSettings } from './api';
-import { ConversationReader, mergeLatestPage, mergeTurns, visibleMessages as filterVisibleMessages } from './sync';
+import { ConversationReader, groupProgress, isProgress, mergeLatestPage, mergeTurns, sameTranscript, visibleMessages as filterVisibleMessages } from './sync';
 import { GoalControl } from './goals';
 import { ManagementPage } from './accounts';
 import './styles.css';
@@ -24,11 +24,15 @@ function mergeMessages(existing: Message[], incoming: Message[]) {
   for (const message of incoming) merged.set(message.itemId, message);
   return [...merged.values()].sort((a, b) => a.ordinal - b.ordinal || a.itemId.localeCompare(b.itemId));
 }
-function messageDate(ms: number) {
+function messageDate(ms: number, includeTime = true) {
   const date = new Date(ms), today = new Date();
   const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
-  const day = date.toDateString() === today.toDateString() ? '今天' : date.toDateString() === yesterday.toDateString() ? '昨天' : date.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' });
-  return `${day} ${shortTime(ms)}`;
+  const day = date.toDateString() === today.toDateString() ? '今天' : date.toDateString() === yesterday.toDateString() ? '昨天' : date.toLocaleDateString('zh-CN', {
+    year: date.getFullYear() !== today.getFullYear() ? 'numeric' : undefined,
+    month: 'long',
+    day: 'numeric',
+  });
+  return includeTime ? `${day} ${shortTime(ms)}` : day;
 }
 function userPresentation(text: string): { text: string; attachments: number } {
   const marker = '## My request:';
@@ -50,9 +54,10 @@ function Logo({ small = false }: { small?: boolean }) {
 }
 function Modal({ title, children, close, className = '' }: { title: string; children: React.ReactNode; close: () => void; className?: string }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = React.useId();
   useEffect(() => { const d = ref.current!; d.showModal(); return () => d.close(); }, []);
-  return <dialog className={`modal ${className}`} ref={ref} onCancel={e => { e.preventDefault(); close(); }} onClick={e => { if (e.target === ref.current) close(); }}>
-    <div className="modal-heading"><h2>{title}</h2><button className="icon-button" aria-label="关闭弹窗" onClick={close}><X size={21} /></button></div>{children}
+  return <dialog className={`modal ${className}`} ref={ref} aria-labelledby={titleId} onCancel={e => { e.preventDefault(); close(); }} onClick={e => { if (e.target === ref.current) close(); }}>
+    <div className="modal-heading"><h2 id={titleId}>{title}</h2><button className="icon-button" aria-label="关闭弹窗" onClick={close}><X size={21} /></button></div>{children}
   </dialog>;
 }
 function Login({ onLogin, initialRegistration }: { onLogin: (identity: RelaySession, registered: boolean) => void; initialRegistration: boolean }) {
@@ -130,6 +135,8 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
   const [syncErrors, setSyncErrors] = useState<Record<string, string>>({});
   const [hasNewMessages, setHasNewMessages] = useState(false);
   const [followLatest, setFollowLatest] = useState(true);
+  const [conversationActions, setConversationActions] = useState(false);
+  const [inspectedProgress, setInspectedProgress] = useState<Message[] | null>(null);
   const [olderCursor, setOlderCursor] = useState<string | null>(null);
   const [hasOlder, setHasOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -154,9 +161,11 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
   const atLatestRef = useRef(true);
   const scrollRestore = useRef<{ threadId: string; height: number; top: number } | null>(null);
   const historyIntentRef = useRef(0);
-  const touchStartRef = useRef<number | null>(null);
+  const lastScrollTop = useRef(0);
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const uncertainWrites = useRef(new Map<string, string>());
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composerInput = useRef<HTMLTextAreaElement>(null);
   const thread = threads.find(t => t.threadId === selected);
   const draft = drafts[selected] || '';
   const canOperate = device.connectorOnline && !!provider?.connected && !busy;
@@ -254,6 +263,27 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
   function mergePageTurns(id: string, turns: Thread['turns']) {
     setThreads(old => old.map(chat => chat.threadId === id ? { ...chat, turns: mergeTurns(chat.turns, turns) } : chat));
   }
+  function updateRecentPage(page: MessagePage) {
+    const next = mergeLatestPage(messagesRef.current, page);
+    const changed = !sameTranscript(messagesRef.current, next.messages);
+    if (pageLoadedRef.current && !atLatestRef.current && messagesRef.current.length) {
+      pendingLatest.current = changed ? page : null;
+      setHasNewMessages(changed);
+      return;
+    }
+    if (changed) {
+      messagesRef.current = next.messages;
+      setMessages(next.messages);
+    }
+    if (!pageLoadedRef.current || next.reset) {
+      olderCursorRef.current = page.olderCursor;
+      setOlderCursor(page.olderCursor);
+      setHasOlder(page.hasMore);
+      pageLoadedRef.current = true;
+    }
+    pendingLatest.current = null;
+    setHasNewMessages(false);
+  }
   async function loadDetail(id = selected, silent = false) {
     if (!id || selectionRef.current !== id) return;
     if (!silent) setLoading(true);
@@ -266,18 +296,7 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
         });
       },
       messages: page => {
-        const next = mergeLatestPage(messagesRef.current, page);
-        if (pageLoadedRef.current && !atLatestRef.current && next.reset && messagesRef.current.length) {
-          pendingLatest.current = page; setHasNewMessages(true);
-        } else {
-          if (!atLatestRef.current && page.messages.some(message => !messagesRef.current.some(old => old.itemId === message.itemId))) setHasNewMessages(true);
-          pendingLatest.current = null;
-          messagesRef.current = next.messages; setMessages(next.messages);
-        }
-        if (!pageLoadedRef.current || next.reset && !pendingLatest.current) {
-          olderCursorRef.current = page.olderCursor; setOlderCursor(page.olderCursor); setHasOlder(page.hasMore);
-          pageLoadedRef.current = true;
-        }
+        updateRecentPage(page);
         mergePageTurns(id, page.turns); setLastUpdated(Date.now()); setLoading(false);
       },
       queue: value => setQueue(value.items),
@@ -288,16 +307,16 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
       },
     }, supportsQueue);
   }
+  function followCurrentPage() {
+    atLatestRef.current = true;
+    setFollowLatest(true);
+    const pending = pendingLatest.current;
+    if (pending) updateRecentPage(pending);
+  }
   function jumpToLatest() {
-    const page = pendingLatest.current;
-    if (page) {
-      messagesRef.current = page.messages; setMessages(page.messages);
-      olderCursorRef.current = page.olderCursor; setOlderCursor(page.olderCursor); setHasOlder(page.hasMore);
-      pendingLatest.current = null;
-    }
-    atLatestRef.current = true; setFollowLatest(true); setHasNewMessages(false);
+    followCurrentPage();
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'instant' });
-    loadDetail(selected, true);
+    if (device.connectorOnline) loadDetail(selected, true);
   }
   async function loadOlder() {
     const id = selectionRef.current, cursor = olderCursorRef.current;
@@ -307,7 +326,7 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
     historyIntentRef.current = 0; touchStartRef.current = null;
     try {
       const page = await bridge<MessagePage>(`${threadPath(id)}/messages?limit=${PAGE_SIZE}&before=${cursor}`);
-      if (!current()) return;
+      if (!current() || cursor !== olderCursorRef.current) return;
       const element = scrollRef.current;
       if (element) scrollRestore.current = { threadId: id, height: element.scrollHeight, top: element.scrollTop };
       messagesRef.current = mergeMessages(page.messages, messagesRef.current); setMessages(messagesRef.current); mergePageTurns(id, page.turns);
@@ -387,10 +406,12 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
     selectionRef.current = selected; pageLoadedRef.current = false; olderCursorRef.current = null; atLatestRef.current = true;
     messagesRef.current = []; pendingLatest.current = null; setHasNewMessages(false); setSyncErrors({});
     olderRequestRef.current = false;
+    lastScrollTop.current = 0;
     scrollRestore.current = null;
     setMessages([]); setFiles([]); setFilesLoading(false); setQueue([]); setHasOlder(false); setOlderCursor(null); setLoadingOlder(false); setLastUpdated(undefined);
     historyIntentRef.current = 0; touchStartRef.current = null;
     setExpanded(true); setFollowLatest(true); setError('');
+    setConversationActions(false); setInspectedProgress(null);
     setGoalOpen(false);
     setReceipt(current => current?.result?.threadId === selected ? current : null);
   }, [selected]);
@@ -460,12 +481,23 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
   useLayoutEffect(() => {
     const restore = scrollRestore.current, element = scrollRef.current;
     if (restore && element && restore.threadId === selected) {
-      element.scrollTop = restore.top + element.scrollHeight - restore.height; scrollRestore.current = null;
+      element.scrollTo({ top: restore.top + element.scrollHeight - restore.height, behavior: 'instant' });
+      lastScrollTop.current = element.scrollTop;
+      scrollRestore.current = null;
     }
   }, [messages]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (followLatest && !scrollRestore.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'instant' });
   }, [messages, followLatest, queue.length]);
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+    const resize = new ResizeObserver(() => {
+      if (atLatestRef.current && !scrollRestore.current) element.scrollTo({ top: element.scrollHeight, behavior: 'instant' });
+    });
+    resize.observe(element);
+    return () => resize.disconnect();
+  }, [selected]);
   useEffect(() => {
     if (filesOpen && selected && device.connectorOnline) loadFiles(selected);
   }, [filesOpen, selected, device.connectorOnline]);
@@ -517,13 +549,23 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
     if (!draft.trim() || !canSubmit) return;
     const text = draft;
     const mode = composerMode;
+    const current = reader.current.scope();
     const result = await mutate(`${threadPath(selected)}/${mode === 'send' ? 'messages' : 'queue'}`, 'POST', { text }, mode === 'send' ? '正在发送到 Mac…' : '正在加入队列…');
     if (result) {
       setDrafts(d => ({ ...d, [selected]: d[selected] === text ? '' : d[selected] }));
-      setFollowLatest(true);
+      if (!current()) return;
+      if (mode === 'send') followCurrentPage();
       if (providerId !== 'claude') setToast(mode === 'queue' ? `已加入 ${providerName} 原生队列` : 'Mac 已受理，正在核对对话回执');
       await loadDetail(selected, true);
     }
+  }
+  function reusePrompt(text: string) {
+    const next = draft ? draft + '\n\n' + text : text;
+    if (next.length > 120000) { setToast('输入框内容已接近上限'); return; }
+    setDrafts(current => ({ ...current, [selected]: next }));
+    const input = composerInput.current;
+    input?.focus({ preventScroll: true });
+    requestAnimationFrame(() => input?.setSelectionRange(input.value.length, input.value.length));
   }
   async function changeGoal(method: string, body: object) {
     const id = selected, current = reader.current.scope();
@@ -569,6 +611,19 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
   const filteredProjects = projects.filter(project => project.name.toLowerCase().includes(search.toLowerCase()));
   const visibleMessages = filterVisibleMessages(messages, expanded, stat.tone === 'green' ? thread?.turns[0]?.turn_id : undefined);
   const commentaryCount = messages.length - messages.filter(m => m.phase !== 'commentary').length;
+  const progressGroups = mobile ? groupProgress(messages) : [];
+  const firstReplies = new Map<string, string>();
+  for (const [message] of progressGroups) {
+    if (message.role === 'assistant' && !isProgress(message) && !firstReplies.has(message.turnId)) {
+      firstReplies.set(message.turnId, message.itemId);
+    }
+  }
+  const inspectedNotes = inspectedProgress && (progressGroups.find(group => group[0].itemId === inspectedProgress[0].itemId) || inspectedProgress);
+  const status = !device.connectorOnline
+    ? { label: device.online ? '连接器离线' : '电脑离线', tone: 'amber', hint: '恢复连接后继续同步' }
+    : syncErrors.thread ? { label: '状态待同步', tone: 'muted', hint: syncErrors.thread } : stat;
+  const projectName = thread?.cwd?.split(/[\\/]/).filter(Boolean).pop();
+  const openGoal = () => { setError(''); setGoalOpen(true); };
 
   return <div className={`app ${selected ? 'has-selection' : ''} ${drawerOpen ? 'drawer-open' : ''}`}>
     {mobile && <button className="drawer-backdrop" aria-label="关闭对话侧栏遮罩" aria-hidden={!drawerOpen} tabIndex={-1} onClick={closeDrawer} />}
@@ -610,33 +665,89 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
         <div className="welcome"><div className="welcome-art"><div className="art-orbit one" /><div className="art-orbit two" /><div className="art-core"><Terminal size={42} /></div><span className="art-spark"><Sparkles size={21} /></span><span className="art-status"><i className={`dot ${device.connectorOnline ? 'green' : 'muted'}`} />{device.connectorOnline ? '已就绪' : '等待连接'}</span></div><div className="eyebrow">从这里，继续创造</div><h1>离开桌面，<br />思路继续。</h1><p>{hostDevice.deviceCount === 0 ? '配对电脑后会显示各 AI 客户端的项目。' : '从左上角选择一个对话，继续你的工作。'}</p>{hostDevice.deviceCount === 0 ? <a href="/account" className="primary">配对电脑</a> : <button className="primary" disabled={!canCreate || !workspaces.length} onClick={showNewChat}><Plus size={18} />新建对话</button>}
           <div className="feature-strip"><span><Activity size={16} />实时状态</span><span><FileText size={16} />回复与文件</span><span><ListOrdered size={16} />原生队列</span></div></div>
       </> : <>
-        <header className="conversation-header">
+        {mobile ? <header className="conversation-header mobile-chat-header">
+          <button className="icon-button mobile-back drawer-trigger" data-drawer-trigger aria-label="打开项目与对话" aria-controls="conversation-sidebar" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu size={22} /></button>
+          <div className="conversation-title">
+            <h1>{thread?.title || '正在读取对话…'}</h1>
+            <div className="chat-identity">
+              <ProviderMark id={providerId} className="inline-provider-icon" />
+              <span className="chat-project" title={projectName}>{providerName}{projectName ? ' / ' + projectName : ''}</span>
+              <span className={`chat-runtime ${status.tone}`} title={status.hint}><span className="runtime-dot" />{status.label}</span>
+            </div>
+          </div>
+          <button className="icon-button mobile-chat-control" aria-label="查看对话文件" title="对话文件" onClick={() => setFilesOpen(true)}><Folder size={20} /></button>
+          <button className="icon-button mobile-chat-control" aria-label="对话选项" aria-haspopup="dialog" onClick={() => setConversationActions(true)}><MoreHorizontal size={22} /></button>
+        </header> : <><header className="conversation-header">
           <button className="icon-button mobile-back drawer-trigger" data-drawer-trigger aria-label="打开项目与对话" aria-controls="conversation-sidebar" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu size={23} /></button>
-          <div className="conversation-title"><div className="conversation-breadcrumb"><ProviderMark id={providerId} className="inline-provider-icon" />{providerName}<span>/</span>{thread?.cwd?.split(/[\\/]/).pop() || 'Mac'}</div><h1>{thread?.title || '正在读取对话…'}</h1></div>
+          <div className="conversation-title"><div className="conversation-breadcrumb"><ProviderMark id={providerId} className="inline-provider-icon" />{providerName}<span>/</span>{projectName || 'Mac'}</div><h1>{thread?.title || '正在读取对话…'}</h1></div>
           <button className="header-file-button" aria-label="查看对话文件" title="对话文件" onClick={() => setFilesOpen(true)}><Folder size={18} /><span className="header-file-label">文件</span>{!!files.length && <span className="header-file-count">{files.length}</span>}</button>
-          {(providerId === 'codex' || hasGoalControl) && <button className="icon-button" aria-label="管理对话目标" title="对话目标" onClick={() => { setError(''); setGoalOpen(true); }}><Target size={19} /></button>}
+          {hasGoalControl && <button className="icon-button" aria-label="管理对话目标" title="对话目标" onClick={openGoal}><Target size={19} /></button>}
           <button className="icon-button refresh-detail" aria-label="刷新当前对话" disabled={loading || !device.connectorOnline} onClick={() => loadDetail()}><RefreshCw size={18} className={loading ? 'spin' : ''} /></button>
           {window.AIRemoteAndroid && <button className="icon-button" aria-label="Android 应用设置与更新" onClick={() => window.AIRemoteAndroid?.openSettings()}><MoreHorizontal size={19} /></button>}
         </header>
-        <div className="conversation-subheader"><span className={`status-label ${device.connectorOnline && !syncErrors.thread ? stat.tone : 'muted'}`}><i className="dot" />{syncErrors.thread ? '状态待同步' : device.connectorOnline ? stat.label : device.online ? '连接器离线' : 'Mac 离线'}</span><span className="status-hint">{device.connectorOnline ? stat.hint : '恢复连接后继续同步'}</span><span className="updated">{syncErrors.messages ? '消息同步中断' : lastUpdated ? `${shortTime(lastUpdated)} 同步` : '等待同步'}</span></div>
-        {!device.connectorOnline && <div className="offline-banner" role="status"><WifiOff size={17} /><span>{device.online ? 'Mac 在线，但本地连接器暂不可用。' : 'Mac 暂时离线，正在等待重新连接。'}<small>当前显示的是本次打开时已读取的内容。</small></span></div>}
+        <div className="conversation-subheader"><span className={`status-label ${status.tone}`}><i className="dot" />{status.label}</span><span className="status-hint">{status.hint}</span><span className="updated">{syncErrors.messages ? '消息同步中断' : lastUpdated ? `${shortTime(lastUpdated)} 同步` : '等待同步'}</span></div></>}
+        {!device.connectorOnline && <div className="offline-banner" role="status"><WifiOff size={17} /><span>{device.online ? '电脑在线，连接器暂不可用。' : '电脑暂时离线，正在等待重新连接。'}{!mobile && <small>当前显示的是本次打开时已读取的内容。</small>}</span></div>}
         {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="关闭错误提示" onClick={() => setError('')}><X size={16} /></button></div>}
         {!error && (syncErrors.messages || syncErrors.thread || syncErrors.queue) && <div className="error-banner" role="status"><span>{syncErrors.messages ? `消息暂未更新：${syncErrors.messages}` : syncErrors.thread ? `运行状态暂未更新：${syncErrors.thread}` : `队列暂未更新：${syncErrors.queue}`}</span></div>}
-        <div className="content-scroll" ref={scrollRef} role="region" aria-label="对话消息" tabIndex={0} onWheel={event => { if (event.deltaY < 0) historyScrollIntent(); }} onKeyDown={event => { if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) historyScrollIntent(); }} onTouchStart={event => { touchStartRef.current = event.touches[0]?.clientY ?? null; }} onTouchMove={event => {
-          if (touchStartRef.current !== null && event.touches[0] && event.touches[0].clientY - touchStartRef.current > 24) historyScrollIntent();
+        <div className="transcript-frame">
+        <div className="content-scroll" ref={scrollRef} role="region" aria-label="对话消息" tabIndex={0} onWheel={event => { if (event.deltaY < 0) historyScrollIntent(); }} onKeyDown={event => { if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) historyScrollIntent(); }} onTouchStart={event => {
+          const touch = event.touches[0];
+          touchStartRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
+        }} onTouchMove={event => {
+          const start = touchStartRef.current, touch = event.touches[0];
+          if (start && touch && touch.clientY - start.y > Math.max(24, Math.abs(touch.clientX - start.x))) historyScrollIntent();
         }} onScroll={() => {
           const element = scrollRef.current; if (!element) return;
-          const atBottom = !olderRequestRef.current && element.scrollHeight - element.scrollTop - element.clientHeight < 120;
-          if (atBottom) { atLatestRef.current = true; setFollowLatest(true); if (!pendingLatest.current) setHasNewMessages(false); }
-          else if (Date.now() - historyIntentRef.current < 800) { atLatestRef.current = false; setFollowLatest(false); }
+          const movedUp = element.scrollTop < lastScrollTop.current - 1;
+          lastScrollTop.current = element.scrollTop;
+          if (olderRequestRef.current) return;
+          const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 72;
+          if (atBottom && !atLatestRef.current) followCurrentPage();
+          else if (!atBottom && atLatestRef.current && (movedUp || Date.now() - historyIntentRef.current < 800)) {
+            atLatestRef.current = false; setFollowLatest(false);
+          }
           if (element.scrollTop < 80 && pageLoadedRef.current && olderCursorRef.current && !scrollRestore.current && Date.now() - historyIntentRef.current < 800) loadOlder();
         }}>
-          {loading && !messages.length ? <div className="panel-empty"><LoaderCircle className="spin" size={27} /><h3>正在从 Mac 读取…</h3><p>通过你的阿里云中继安全连接</p></div> : <div className="messages-panel">
-            <div className="history-note"><span>与 Mac 上的同一个对话</span><button onClick={() => setExpanded(!expanded)}>{expanded ? '收起过程消息' : `显示过程消息${commentaryCount ? ` (${commentaryCount})` : ''}`}<ChevronDown size={13} /></button></div>
-            {(hasOlder || loadingOlder) && <button className="history-paging" aria-label="加载更早消息" disabled={loadingOlder || !olderCursor} onClick={loadOlder}>{loadingOlder ? <LoaderCircle size={13} className="spin" /> : <ArrowUp size={13} />}{loadingOlder ? '正在读取更早消息…' : '向上滚动，查看更早消息'}</button>}
-            {!messages.length && <div className="panel-empty"><MessageSquare size={30} /><h3>新的思路，从一句话开始</h3><p>在下方发送指令，{providerName} 会在 Mac 上执行。</p></div>}
-            {!!messages.length && !visibleMessages.length && <div className="progress-placeholder">{providerName} 正在处理。展开过程消息可查看最近进度。</div>}
-            {visibleMessages.map((m, index) => {
+          {loading && device.connectorOnline && !messages.length ? <div className="panel-empty" role="status"><LoaderCircle className="spin" size={24} /><h3>正在读取对话…</h3></div> : <div className={`messages-panel${mobile ? ' mobile-transcript' : ''}`}>
+            {!mobile && <div className="history-note"><span>与电脑上的同一个对话</span><button onClick={() => setExpanded(!expanded)}>{expanded ? '收起过程消息' : `显示过程消息${commentaryCount ? ` (${commentaryCount})` : ''}`}<ChevronDown size={13} /></button></div>}
+            {(hasOlder || loadingOlder) && <button className="history-paging" aria-label="加载更早消息" disabled={loadingOlder || !olderCursor || !device.connectorOnline} onClick={loadOlder}>{loadingOlder ? <LoaderCircle size={13} className="spin" /> : <ArrowUp size={13} />}{loadingOlder ? '正在读取更早消息…' : '加载更早消息'}</button>}
+            {!messages.length && <div className="panel-empty"><h3>{device.connectorOnline ? '这条对话还没有消息' : '连接恢复后加载消息'}</h3></div>}
+            {!mobile && !!messages.length && !visibleMessages.length && <div className="progress-placeholder">{providerName} 正在处理。展开过程消息可查看最近进度。</div>}
+            {mobile ? progressGroups.map((group, index) => {
+              const m = group[0], preview = index === progressGroups.length - 1;
+              const previous = progressGroups[index - 1]?.at(-1);
+              const dated = m.createdAtMs > 0 && (!previous || new Date(m.createdAtMs).toDateString() !== new Date(previous.createdAtMs).toDateString());
+              const user = m.role === 'user';
+              const presentation = user ? userPresentation(m.text) : { text: m.text, attachments: 0 };
+              const turn = user || firstReplies.get(m.turnId) !== m.itemId ? undefined : thread?.turns.find(t => t.turn_id === m.turnId);
+              const live = preview && stat.tone === 'green' && device.connectorOnline && m.turnId === thread?.turns[0]?.turn_id;
+              return <React.Fragment key={m.itemId}>
+                {dated && <div className="message-date">{messageDate(m.createdAtMs, false)}</div>}
+                {isProgress(m) ? <button className="progress-summary" type="button" aria-haspopup="dialog" onClick={() => setInspectedProgress(group)}>
+                  {live ? <Activity size={19} /> : <ListOrdered size={19} />}
+                  <span className="progress-summary-content"><strong>{live ? '实时进度' : '执行过程'}</strong>
+                    {preview && <span>{group.at(-1)?.text.replace(/\s+/g, ' ').trim()}</span>}
+                  </span>
+                  <small>{group.length} 条</small><ChevronRight size={16} />
+                </button> : <article data-item-id={m.itemId} className={`message ${user ? 'user' : 'assistant'}`}>
+                  <div className="message-main">
+                    {!!presentation.attachments && <div className="message-attachments"><File size={13} />{presentation.attachments} 个附件</div>}
+                    {user ? <>
+                      <div className="prompt-text">{presentation.text}</div>
+                      <div className="prompt-actions">{m.createdAtMs > 0 && <time>{shortTime(m.createdAtMs)}</time>}
+                        {!!presentation.text.trim() && <button type="button" className="icon-button prompt-reuse" aria-label="放入输入框" title="放入输入框" onClick={() => reusePrompt(presentation.text)}><Pencil size={15} /></button>}
+                      </div>
+                    </> : <>
+                      <MessageBody text={presentation.text} files={files} download={download} resolveLocal={downloadLocal} feedback={setToast} />
+                      <div className="reply-actions">
+                        <CopyAction label="复制回复" text={m.text} feedback={setToast} />
+                        {turn?.completed_at != null && <TurnDuration turn={turn} />}
+                      </div>
+                    </>}
+                  </div>
+                </article>}
+              </React.Fragment>;
+            }) : visibleMessages.map((m, index) => {
               const presentation = m.role === 'user' ? userPresentation(m.text) : { text: m.text, attachments: 0 };
               const turn = thread?.turns.find(t => t.turn_id === m.turnId);
               const firstReply = m.role === 'assistant' && !visibleMessages.slice(0, index).some(previous => previous.role === 'assistant' && previous.turnId === m.turnId);
@@ -649,16 +760,17 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
                   <div className="message-main">
                     {m.role !== 'user' && <div className="message-meta"><strong>{providerName}</strong>{m.phase === 'commentary' && <span className="progress-tag">执行进度</span>}{(m.phase === 'final' || m.phase === 'final_answer') && <span className="final-tag"><Check size={11} />回复</span>}<time>{shortTime(m.createdAtMs)}</time></div>}
                     {!!presentation.attachments && <div className="message-attachments"><File size={12} />{presentation.attachments} 个附件</div>}
-                    <MessageBody text={presentation.text} files={files} download={download} resolveLocal={downloadLocal} />
+                    <MessageBody text={presentation.text} files={files} download={download} resolveLocal={downloadLocal} feedback={setToast} />
                     {m.role === 'assistant' && m.phase !== 'commentary' && <button className="copy-message" onClick={async () => { try { await navigator.clipboard.writeText(m.text); setToast('回复已复制'); } catch { setToast('请长按文字复制'); } }}><Copy size={13} />复制回复</button>}
                   </div>
                 </article>
               </React.Fragment>;
             })}
-            {stat.tone === 'green' && device.connectorOnline && <div className="live-processing"><TurnDuration turn={thread?.turns[0]} live /><div className="working-indicator"><span className="typing-dots"><i /><i /><i /></span><span>{providerName} 正在执行，新的回复会自动出现</span></div></div>}
+            {!mobile && stat.tone === 'green' && device.connectorOnline && <div className="live-processing"><TurnDuration turn={thread?.turns[0]} live /><div className="working-indicator"><span className="typing-dots"><i /><i /><i /></span><span>{providerName} 正在执行，新的回复会自动出现</span></div></div>}
           </div>}
         </div>
-        {!followLatest && <button className="jump-latest" onClick={jumpToLatest}><ArrowDown size={14} />{hasNewMessages ? '有新消息 · 回到最新' : '回到最新消息'}</button>}
+        {!followLatest && <button className={`jump-latest${hasNewMessages ? ' pending' : ''}`} onClick={jumpToLatest}><ArrowDown size={16} />{hasNewMessages ? '有更新 · 回到最新' : '回到最新'}</button>}
+        </div>
         <div className="composer-wrap">
           {receipt && <ReceiptView receipt={receipt} claude={claude} close={() => setReceipt(null)} />}
           {(providerId === 'codex' || claude && (thread?.modelSettings || thread?.claudeSettings)) && <ModelStatus thread={thread} online={device.connectorOnline && !syncErrors.thread}>
@@ -669,7 +781,7 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
           <div className="composer-stack">
           <QueueDock reorder={!!provider?.features.includes('queue-reorder')} items={queue} active={stat.tone === 'green'} claude={claude} paused={!!thread?.queuePaused} enabled={canManageQueue} onSend={item => queueAction(item, 'send')} onDelete={item => queueAction(item, 'delete')} onEdit={item => { setEditing(item); setEditText(queueText(item)); }} onMove={(item, direction) => queueAction(item, direction)} onClear={() => setClearing(true)} />
           {hasGoalControl && <GoalControl key={selected} providerName={providerName} claude={claude} state={thread?.goalState} open={goalOpen} close={() => setGoalOpen(false)} show={() => { setError(''); setGoalOpen(true); }} online={device.connectorOnline && !syncErrors.thread && !loading} busy={!!busy} error={error} change={changeGoal} Modal={Modal} />}
-          <Composer mobile={mobile} value={draft} onChange={value => setDrafts(d => ({ ...d, [selected]: value }))} onSend={send} mode={composerMode} setMode={setSendMode} providerId={providerId} providerName={providerName} busy={!!busy} enabled={canSubmit} canCreate={canCreate && workspaces.length > 0} supportsQueue={supportsQueue} queueOnly={claudeRunning} onFiles={() => setFilesOpen(true)} onNewChat={showNewChat} />
+          <Composer input={composerInput} mobile={mobile} value={draft} onChange={value => setDrafts(d => ({ ...d, [selected]: value }))} onSend={send} mode={composerMode} setMode={setSendMode} providerId={providerId} providerName={providerName} busy={!!busy} enabled={canSubmit} canCreate={canCreate && workspaces.length > 0} supportsQueue={supportsQueue} queueOnly={claudeRunning} onFiles={() => setFilesOpen(true)} onNewChat={showNewChat} />
           </div>
           <div className="composer-caption">{busy || (composerMode === 'queue' ? claude ? 'AIRemote 队列在会话空闲时按顺序执行' : `原生队列由 ${providerName} 自动执行，空闲时可能立即开始` : stat.tone === 'green' ? '运行中发送会追加到当前对话 · ⌘ / Ctrl + Enter 发送' : '在同一对话继续下一轮 · ⌘ / Ctrl + Enter 发送')}</div>
         </div>
@@ -691,6 +803,19 @@ function App({ identity, onLogout, providerId, switchProvider, drafts, setDrafts
         {provider?.features.includes('send') && <span>同一对话续聊</span>}
       </div>
       <button className="secondary full" onClick={() => setProviderInfoOpen(false)}>知道了</button>
+    </Modal>}
+    {conversationActions && <Modal title="对话选项" className="conversation-sheet chat-actions" close={() => setConversationActions(false)}>
+      <button type="button" disabled={loading || !device.connectorOnline} onClick={() => { setConversationActions(false); loadDetail(); }}><RefreshCw size={19} />刷新对话</button>
+      {hasGoalControl && <button type="button" onClick={() => { setConversationActions(false); openGoal(); }}><Target size={19} />对话目标</button>}
+      {window.AIRemoteAndroid && <button type="button" onClick={() => { setConversationActions(false); window.AIRemoteAndroid?.openSettings(); }}><SlidersHorizontal size={19} />应用设置与更新</button>}
+    </Modal>}
+    {inspectedNotes && <Modal title={`执行过程 · ${inspectedNotes.length} 条`} className="conversation-sheet process-sheet" close={() => setInspectedProgress(null)}>
+      <div className="process-notes">
+        {inspectedNotes.map(note => <article className="process-note" key={note.itemId}>
+          {note.createdAtMs > 0 && <time>{shortTime(note.createdAtMs)}</time>}
+          <MessageBody text={note.text} files={files} download={download} resolveLocal={downloadLocal} feedback={setToast} />
+        </article>)}
+      </div>
     </Modal>}
     {filesOpen && <Modal className="files-modal" title="对话文件" close={() => setFilesOpen(false)}><div className="files-toolbar"><p>需要时从 Mac 获取文件。</p><button className="icon-button" aria-label="刷新文件列表" disabled={filesLoading || !device.connectorOnline} onClick={() => loadFiles()}><RefreshCw size={16} className={filesLoading ? 'spin' : ''} /></button></div>{error && <p className="error-text" role="alert">{error}</p>}{filesLoading && !files.length ? <div className="panel-empty"><LoaderCircle size={24} className="spin" /><p>正在读取文件…</p></div> : <FilesView files={files} disabled={!device.connectorOnline} download={download} />}</Modal>}
     {claude && selected && claudeSettingsThread === selected && thread?.claudeSettings && <Modal title="Claude 工作设置" close={() => setClaudeSettingsThread('')}>
@@ -718,7 +843,8 @@ function ModelStatus({ thread, online, children }: { thread?: Thread; online: bo
   </div>;
 }
 
-function Composer({ mobile, value, onChange, onSend, mode, setMode, providerId, providerName, busy, enabled, canCreate, supportsQueue, queueOnly, onFiles, onNewChat }: {
+function Composer({ input, mobile, value, onChange, onSend, mode, setMode, providerId, providerName, busy, enabled, canCreate, supportsQueue, queueOnly, onFiles, onNewChat }: {
+  input: React.RefObject<HTMLTextAreaElement | null>;
   mobile: boolean; value: string; onChange: (value: string) => void; onSend: () => void;
   mode: 'send' | 'queue'; setMode: (mode: 'send' | 'queue') => void;
   providerId: ProviderId; providerName: string; busy: boolean; enabled: boolean; canCreate: boolean; supportsQueue: boolean; queueOnly: boolean;
@@ -727,7 +853,6 @@ function Composer({ mobile, value, onChange, onSend, mode, setMode, providerId, 
   const [focused, setFocused] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const form = useRef<HTMLFormElement>(null);
-  const input = useRef<HTMLTextAreaElement>(null);
   const tools = useRef<HTMLButtonElement>(null);
   const expanded = !mobile || focused || menuOpen;
   useLayoutEffect(() => {
@@ -855,11 +980,43 @@ function FilesView({ files, disabled, download }: { files: Artifact[]; disabled:
   </>;
 }
 
-function MessageBody({ text, files, download, resolveLocal }: { text: string; files: Artifact[]; download: (file: Artifact) => void; resolveLocal: (path: string) => void }) {
+function CopyAction({ label, text, feedback }: { label: string; text: string; feedback: (message: string) => void }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  return <button type="button" className="copy-action" onClick={async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => setCopied(false), 1800);
+    } catch { feedback('可长按文字复制'); }
+  }}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? '已复制' : label}</button>;
+}
+
+function MessageBody({ text, files, download, resolveLocal, feedback }: {
+  text: string; files: Artifact[]; download: (file: Artifact) => void;
+  resolveLocal: (path: string) => void; feedback: (message: string) => void;
+}) {
   const [open, setOpen] = useState(false);
   const long = text.length > 8000;
   const visible = long && !open ? text.slice(0, 5000) + '\n\n…' : text;
   return <><div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+    pre: ({ children }) => {
+      const code = React.Children.toArray(children).find(
+        (child): child is React.ReactElement<{ className?: string; children: React.ReactNode }> =>
+          React.isValidElement(child) && child.type === 'code',
+      );
+      if (typeof code?.props.children !== 'string') return <pre>{children}</pre>;
+      const source = code.props.children.replace(/\n$/, '');
+      const language = code.props.className?.match(/(?:^|\s)language-([^\s]+)/)?.[1];
+      return <div className="code-panel">
+        <div className="code-heading"><span>{language || '代码'}</span>
+          {(!long || open) && <CopyAction label="复制代码" text={source} feedback={feedback} />}
+        </div>
+        <pre tabIndex={0} aria-label={language ? `${language} 代码块` : '代码块'}>{children}</pre>
+      </div>;
+    },
     a: ({ href, children }) => {
       let local = href || ''; try { local = decodeURIComponent(local).replace(/:\d+$/, ''); } catch { /* keep original */ }
       if (local.startsWith('/') && !local.startsWith('//')) {

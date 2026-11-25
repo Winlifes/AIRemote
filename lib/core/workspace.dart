@@ -81,6 +81,25 @@ int compareMessage(Json a, Json b) {
   return order != 0 ? order : '${a['itemId']}'.compareTo('${b['itemId']}');
 }
 
+bool _sameTranscript(JsonList earlier, JsonList next) {
+  if (earlier.length != next.length) return false;
+  const fields = [
+    'itemId',
+    'turnId',
+    'ordinal',
+    'role',
+    'phase',
+    'text',
+    'createdAtMs',
+  ];
+  for (var index = 0; index < earlier.length; index++) {
+    if (fields.any((field) => earlier[index][field] != next[index][field])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 JsonList mergeTurns(dynamic existing, dynamic incoming) {
   const terminal = {'completed', 'failed', 'interrupted'};
   final merged = {for (final turn in objects(existing)) turn['turn_id']: turn};
@@ -639,30 +658,7 @@ class Workspace extends ChangeNotifier {
             )) {
               throw const ApiError('返回的消息不属于当前对话');
             }
-            final ids = incoming.map((m) => m['itemId']).toSet();
-            final overlap = messages.any((m) => ids.contains(m['itemId']));
-            final reset =
-                messages.isEmpty ||
-                incoming.isEmpty ||
-                value['hasMore'] != true ||
-                !overlap;
-            if (reset && messages.isNotEmpty && !followLatest) {
-              _pendingPage = value;
-              hasNewMessages = true;
-            } else {
-              if (reset) {
-                messages = incoming;
-                olderCursor = value['olderCursor'];
-                hasOlder = value['hasMore'] == true;
-              } else {
-                messages = [
-                  ...messages.where(
-                    (m) => compareMessage(m, incoming.first) < 0,
-                  ),
-                  ...incoming,
-                ];
-              }
-            }
+            _updateRecentPage(value, incoming);
             _mergePageTurns(value);
             loading = false;
           } else if (entry.key == 'queue') {
@@ -685,6 +681,34 @@ class Workspace extends ChangeNotifier {
     );
   }
 
+  void _updateRecentPage(Json page, JsonList incoming) {
+    final ids = incoming.map((m) => m['itemId']).toSet();
+    final reset =
+        messages.isEmpty ||
+        incoming.isEmpty ||
+        page['hasMore'] != true ||
+        !messages.any((m) => ids.contains(m['itemId']));
+    final next = reset
+        ? incoming
+        : [
+            ...messages.where((m) => compareMessage(m, incoming.first) < 0),
+            ...incoming,
+          ];
+    final changedItems = !_sameTranscript(messages, next);
+    if (!followLatest && messages.isNotEmpty) {
+      _pendingPage = changedItems ? page : null;
+      hasNewMessages = changedItems;
+      return;
+    }
+    if (changedItems) messages = next;
+    if (reset) {
+      olderCursor = page['olderCursor'];
+      hasOlder = page['hasMore'] == true;
+    }
+    _pendingPage = null;
+    hasNewMessages = false;
+  }
+
   Future<void> loadOlder() async {
     if (loadingOlder || olderCursor == null || !online) return;
     final generation = _generation, id = selected, cursor = olderCursor!;
@@ -695,7 +719,9 @@ class Workspace extends ChangeNotifier {
       final value = await read(
         '/api/threads/$id/messages?limit=40&before=${Uri.encodeQueryComponent(cursor)}',
       );
-      if (generation != _generation || disposed) return;
+      if (generation != _generation || disposed || cursor != olderCursor) {
+        return;
+      }
       if (objects(
         value['messages'],
       ).any((m) => m['threadId'] != null && m['threadId'] != id)) {
@@ -719,17 +745,19 @@ class Workspace extends ChangeNotifier {
     }
   }
 
-  void jumpLatest() {
-    if (_pendingPage != null) {
-      messages = objects(_pendingPage!['messages']);
-      olderCursor = _pendingPage!['olderCursor'];
-      hasOlder = _pendingPage!['hasMore'] == true;
-      _pendingPage = null;
+  void setFollowingLatest(bool follow) {
+    if (followLatest == follow) return;
+    followLatest = follow;
+    final pending = _pendingPage;
+    if (follow && pending != null) {
+      _updateRecentPage(pending, objects(pending['messages']));
     }
-    followLatest = true;
-    hasNewMessages = false;
     changed();
-    refreshChat();
+  }
+
+  void jumpLatest() {
+    setFollowingLatest(true);
+    unawaited(refreshChat());
   }
 
   void _mergePageTurns(Json page) {
@@ -812,7 +840,7 @@ class Workspace extends ChangeNotifier {
       } else {
         notice = '';
       }
-      followLatest = true;
+      if (mode == 'send') setFollowingLatest(true);
       unawaited(refreshChat());
     }
     changed();

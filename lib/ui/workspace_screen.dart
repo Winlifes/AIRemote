@@ -1,14 +1,12 @@
 import 'dart:math';
 // ignore: deprecated_member_use
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollDirection;
-import 'package:flutter/services.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../core/api.dart';
 import '../core/platform.dart';
 import '../core/workspace.dart';
 import 'app.dart';
+import 'chat_transcript.dart';
 import 'composer.dart';
 
 class WorkspaceScreen extends StatefulWidget {
@@ -28,6 +26,7 @@ class WorkspaceScreen extends StatefulWidget {
 class _WorkspaceScreenState extends State<WorkspaceScreen>
     with WidgetsBindingObserver {
   final scaffold = GlobalKey<ScaffoldState>(), scroll = ScrollController();
+  final composeFocus = FocusNode(debugLabel: "chat-composer");
   Workspace get state => widget.state;
   @override
   void initState() {
@@ -42,6 +41,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     scroll.dispose();
+    composeFocus.dispose();
     super.dispose();
   }
 
@@ -74,138 +74,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
         color: canvas,
         child: Column(
           children: [
-            Padding(
-              padding: EdgeInsets.only(top: padding.top),
-              child: SizedBox(
-                height: 68,
-                child: Row(
-                  children: [
-                    const SizedBox(width: 8),
-                    IconButton(
-                      tooltip: '打开项目与对话',
-                      onPressed: openDrawer,
-                      icon: const Icon(Icons.menu_rounded),
-                    ),
-                    Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.only(left: 5),
-                        child: selected
-                            ? Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      ProviderIcon(state.provider, 13),
-                                      const SizedBox(width: 5),
-                                      Text(
-                                        state.providerName,
-                                        style: const TextStyle(
-                                          fontSize: 10,
-                                          color: muted,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 5),
-                                      Expanded(
-                                        child: Text(
-                                          '/ ${state.chat?['cwd']?.toString().split('/').last ?? 'Mac'}',
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            fontSize: 10,
-                                            color: muted,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  Text(
-                                    state.chat?['title']?.toString() ??
-                                        '读取对话中…',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              )
-                            : const Text(
-                                'AIRemote',
-                                style: TextStyle(
-                                  fontSize: 22,
-                                  fontWeight: FontWeight.w700,
-                                  letterSpacing: -.5,
-                                ),
-                              ),
-                      ),
-                    ),
-                    if (selected)
-                      IconButton(
-                        tooltip: '对话文件',
-                        onPressed: () =>
-                            showFiles(context, state, widget.native),
-                        icon: const Icon(Icons.folder_outlined, size: 21),
-                      ),
-                    if (selected && state.canSetGoal && state.goal == null)
-                      IconButton(
-                        tooltip: '对话目标',
-                        onPressed: () => showGoal(context, state),
-                        icon: const Icon(
-                          Icons.track_changes_outlined,
-                          size: 21,
-                        ),
-                      ),
-                    IconButton(
-                      tooltip: '应用设置与更新',
-                      onPressed: widget.settings,
-                      icon: const Icon(Icons.more_horiz, size: 22),
-                    ),
-                    const SizedBox(width: 3),
-                  ],
-                ),
-              ),
-            ),
-            if (selected)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 18, 8),
-                child: Row(
-                  children: [
-                    if (state.isRunning)
-                      const SizedBox.square(
-                        dimension: 10,
-                        child: CircularProgressIndicator(strokeWidth: 1.5),
-                      ),
-                    if (state.isRunning) const SizedBox(width: 6),
-                    Text(
-                      state.online
-                          ? state.hasLiveStatus
-                                ? runtimeLabel(state.chat)
-                                : '状态待同步'
-                          : state.device['online'] == true
-                          ? '连接器离线'
-                          : 'Mac 离线',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: state.isRunning
-                            ? const Color(0xff239d7b)
-                            : muted,
-                      ),
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      tooltip: '刷新对话',
-                      visualDensity: VisualDensity.compact,
-                      constraints: const BoxConstraints.tightFor(
-                        width: 28,
-                        height: 26,
-                      ),
-                      onPressed: state.online ? state.refreshChat : null,
-                      icon: const Icon(Icons.refresh, size: 16, color: muted),
-                    ),
-                  ],
-                ),
-              ),
+            _header(padding.top, selected),
             if (state.error.isNotEmpty)
               _ErrorBar(state.error, () {
                 state.error = '';
@@ -222,7 +91,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
                   children: [
                     Expanded(
                       child: selected
-                          ? _messages()
+                          ? ChatTranscript(
+                              state: state,
+                              scroll: scroll,
+                              link: (path) => openMessageLink(
+                                context,
+                                state,
+                                widget.native,
+                                path,
+                              ),
+                              reuse: _reusePrompt,
+                            )
                           : Center(
                               child: Padding(
                                 padding: const EdgeInsets.all(32),
@@ -270,26 +149,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
                               ),
                             ),
                     ),
-                    if (selected && !state.followLatest)
-                      Align(
-                        alignment: Alignment.center,
-                        child: TextButton.icon(
-                          onPressed: () {
-                            state.jumpLatest();
-                            if (scroll.hasClients) {
-                              scroll.animateTo(
-                                0,
-                                duration: const Duration(milliseconds: 200),
-                                curve: Curves.easeOut,
-                              );
-                            }
-                          },
-                          icon: const Icon(Icons.arrow_downward, size: 15),
-                          label: Text(
-                            state.hasNewMessages ? '有新消息 · 回到最新' : '回到最新',
-                          ),
-                        ),
-                      ),
                     if (selected)
                       ConstrainedBox(
                         constraints: BoxConstraints(
@@ -300,6 +159,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
                           child: ComposerDock(
                             state: state,
                             keyboardVisible: keyboardVisible,
+                            focus: composeFocus,
+                            onSent: _showLatest,
                             files: () =>
                                 showFiles(context, state, widget.native),
                             newChat: () => showNewChat(context, state),
@@ -316,81 +177,189 @@ class _WorkspaceScreenState extends State<WorkspaceScreen>
     );
   }
 
-  Widget _messages() {
-    if (state.loading && state.messages.isEmpty) {
-      return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+  void _showLatest() {
+    if (scroll.hasClients) scroll.jumpTo(0);
+  }
+
+  void _reusePrompt(String text) {
+    final saved = state.draft;
+    final draft = saved.isEmpty ? text : '$saved\n\n$text';
+    if (draft.length > 120000) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('输入框内容已接近上限')));
+      return;
     }
-    if (state.messages.isEmpty) {
-      return const Center(
-        child: Text('新的思路，从一句话开始', style: TextStyle(color: muted)),
-      );
-    }
-    final messages = state.messages.reversed.toList();
-    return NotificationListener<ScrollNotification>(
-      onNotification: (event) {
-        final follow = event.metrics.pixels < 80;
-        if (state.followLatest != follow) {
-          state.followLatest = follow;
-          // A scroll notification arrives during layout; update controls next frame.
-          WidgetsBinding.instance.addPostFrameCallback((_) => state.changed());
-        }
-        if (event is UserScrollNotification &&
-            event.direction == ScrollDirection.reverse &&
-            event.metrics.pixels > event.metrics.maxScrollExtent - 100 &&
-            state.hasOlder) {
-          state.loadOlder();
-        }
-        return false;
-      },
-      child: ListView.builder(
-        key: ValueKey(state.draftKey),
-        controller: scroll,
-        reverse: true,
-        padding: const EdgeInsets.fromLTRB(18, 10, 18, 20),
-        itemCount:
-            messages.length +
-            (state.hasOlder || state.loadingOlder ? 1 : 0) +
-            (state.isRunning ? 1 : 0),
-        itemBuilder: (context, index) {
-          if (state.isRunning) {
-            if (index == 0) {
-              return const Padding(
-                padding: EdgeInsets.symmetric(vertical: 12),
-                child: Row(
-                  children: [
-                    SizedBox.square(
-                      dimension: 12,
-                      child: CircularProgressIndicator(strokeWidth: 1.6),
+    state.setDraft(draft);
+    composeFocus.requestFocus();
+  }
+
+  Widget _header(double safeTop, bool selected) {
+    final chat = state.chat;
+    final folder = chat?['cwd']
+        ?.toString()
+        .split(RegExp(r'[/\\]'))
+        .where((part) => part.isNotEmpty)
+        .lastOrNull;
+    final status = state.device['online'] != true
+        ? '电脑离线'
+        : state.device['connectorOnline'] != true
+        ? '连接器离线'
+        : state.hasLiveStatus
+        ? runtimeLabel(chat)
+        : '状态待同步';
+    final statusColor = switch (status) {
+      '运行中' => const Color(0xff257657),
+      '等待处理' || '电脑离线' || '连接器离线' => const Color(0xff97561f),
+      _ => muted,
+    };
+    return Container(
+      decoration: selected
+          ? const BoxDecoration(
+              border: Border(bottom: BorderSide(color: Color(0xffeae7f0))),
+            )
+          : null,
+      padding: EdgeInsets.fromLTRB(8, safeTop + 3, 7, 3),
+      constraints: BoxConstraints(minHeight: safeTop + 62),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: '打开项目与对话',
+            onPressed: openDrawer,
+            icon: const Icon(Icons.menu_rounded),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
+              child: selected
+                  ? Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          chat?['title']?.toString() ?? '正在读取对话…',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            height: 1.3,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        LayoutBuilder(
+                          builder: (context, space) => Row(
+                            children: [
+                              ProviderIcon(state.provider, 13),
+                              const SizedBox(width: 5),
+                              Flexible(
+                                child: Text(
+                                  folder == null
+                                      ? state.providerName
+                                      : '${state.providerName} / $folder',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: muted,
+                                    height: 1.25,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              ExcludeSemantics(
+                                child: SizedBox.square(
+                                  dimension: 6,
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      color: statusColor,
+                                      shape: BoxShape.circle,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 5),
+                              ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  maxWidth: space.maxWidth * .46,
+                                ),
+                                child: Text(
+                                  status,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: statusColor,
+                                    fontWeight: FontWeight.w600,
+                                    height: 1.25,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    )
+                  : const Text(
+                      'AIRemote',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -.5,
+                      ),
                     ),
-                    SizedBox(width: 10),
-                    Text(
-                      '正在执行，回复会自动出现',
-                      style: TextStyle(fontSize: 12, color: muted),
-                    ),
-                  ],
+            ),
+          ),
+          if (selected) ...[
+            IconButton(
+              tooltip: '对话文件',
+              onPressed: () => showFiles(context, state, widget.native),
+              icon: const Icon(Icons.folder_outlined, size: 21),
+            ),
+            PopupMenuButton<_ChatCommand>(
+              tooltip: '对话选项',
+              icon: const Icon(Icons.more_horiz, size: 22),
+              position: PopupMenuPosition.under,
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: _ChatCommand.refresh,
+                  enabled: state.online && !state.loading,
+                  child: const Text('刷新对话'),
                 ),
-              );
-            }
-            index--;
-          }
-          if (index >= messages.length) {
-            return TextButton(
-              onPressed: state.loadingOlder ? null : state.loadOlder,
-              child: Text(state.loadingOlder ? '正在读取更早消息…' : '向上查看更早消息'),
-            );
-          }
-          return ChatMessage(
-            key: ValueKey(messages[index]['itemId']),
-            message: messages[index],
-            state: state,
-            link: (path) =>
-                openMessageLink(context, state, widget.native, path),
-          );
-        },
+                if (state.canSetGoal && state.goal == null)
+                  const PopupMenuItem(
+                    value: _ChatCommand.goal,
+                    child: Text('对话目标'),
+                  ),
+                const PopupMenuItem(
+                  value: _ChatCommand.settings,
+                  child: Text('应用设置与更新'),
+                ),
+              ],
+              onSelected: (action) {
+                switch (action) {
+                  case _ChatCommand.refresh:
+                    state.refreshChat();
+                  case _ChatCommand.goal:
+                    showGoal(context, state);
+                  case _ChatCommand.settings:
+                    widget.settings();
+                }
+              },
+            ),
+          ] else
+            IconButton(
+              tooltip: '应用设置与更新',
+              onPressed: widget.settings,
+              icon: const Icon(Icons.more_horiz, size: 22),
+            ),
+        ],
       ),
     );
   }
 }
+
+enum _ChatCommand { refresh, goal, settings }
 
 class _ErrorBar extends StatelessWidget {
   final String text;
@@ -759,146 +728,6 @@ class _ProjectDrawerState extends State<ProjectDrawer> {
           ),
         ],
       ),
-    );
-  }
-}
-
-class ChatMessage extends StatelessWidget {
-  final Json message;
-  final Workspace state;
-  final void Function(String) link;
-  const ChatMessage({
-    super.key,
-    required this.message,
-    required this.state,
-    required this.link,
-  });
-  @override
-  Widget build(BuildContext context) {
-    final user = message['role'] == 'user',
-        progress = message['phase'] == 'commentary';
-    final text = user
-        ? userText('${message['text'] ?? ''}')
-        : '${message['text'] ?? ''}';
-    final turns = objects(state.chat?['turns']);
-    final turn = turns
-        .where((t) => t['turn_id'] == message['turnId'])
-        .firstOrNull;
-    final firstReply = state.messages
-        .where(
-          (m) => m['role'] == 'assistant' && m['turnId'] == message['turnId'],
-        )
-        .firstOrNull;
-    final duration =
-        firstReply?['itemId'] == message['itemId'] &&
-            turn?['completed_at'] != null &&
-            turn?['started_at'] != null
-        ? (turn!['completed_at'] as num) - (turn['started_at'] as num)
-        : null;
-    return Padding(
-      padding: EdgeInsets.only(top: user ? 16 : 8, bottom: user ? 14 : 8),
-      child: user
-          ? Align(
-              alignment: Alignment.centerRight,
-              child: Container(
-                constraints: BoxConstraints(
-                  maxWidth: MediaQuery.sizeOf(context).width * .86,
-                ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 17,
-                  vertical: 12,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xff121212),
-                  borderRadius: BorderRadius.circular(23),
-                ),
-                child: SelectableText(
-                  text,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    height: 1.7,
-                  ),
-                ),
-              ),
-            )
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (duration != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 9),
-                    child: Text(
-                      '已处理 ${durationLabel(duration)}',
-                      style: const TextStyle(fontSize: 11, color: muted),
-                    ),
-                  ),
-                if (progress)
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 7),
-                    child: Text(
-                      '执行进度',
-                      style: TextStyle(fontSize: 10, color: muted),
-                    ),
-                  ),
-                MarkdownBody(
-                  data: text,
-                  selectable: true,
-                  styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
-                      .copyWith(
-                        p: TextStyle(
-                          fontSize: progress ? 14 : 16,
-                          height: 1.75,
-                          color: progress
-                              ? const Color(0xff777781)
-                              : const Color(0xff33333a),
-                        ),
-                        code: const TextStyle(
-                          fontSize: 13,
-                          fontFamily: 'monospace',
-                        ),
-                        codeblockDecoration: BoxDecoration(
-                          color: const Color(0xfff0f0f3),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                  onTapLink: (_, href, _) {
-                    if (href != null) link(href);
-                  },
-                  imageBuilder: (uri, title, alt) => Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.image_outlined, size: 16, color: muted),
-                      Flexible(
-                        child: Text(
-                          alt ?? title ?? '图片附件',
-                          style: const TextStyle(color: muted, fontSize: 13),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                if (!progress)
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: IconButton(
-                      tooltip: '复制回复',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () {
-                        Clipboard.setData(ClipboardData(text: text));
-                        ScaffoldMessenger.of(
-                          context,
-                        ).showSnackBar(const SnackBar(content: Text('回复已复制')));
-                      },
-                      icon: const Icon(
-                        Icons.copy_outlined,
-                        size: 15,
-                        color: muted,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
     );
   }
 }
